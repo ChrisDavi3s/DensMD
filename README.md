@@ -50,7 +50,7 @@ DensMD provides a powerful, interactive GUI for loading molecular dynamics traje
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/densmd.git
+   git clone https://github.com/ChrisDavi3s/densmd.git
    cd densmd
    ```
 
