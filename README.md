@@ -97,6 +97,10 @@ A miller slice of 2 atom types shown as differently coloured histograms, and the
 
 This project is currently implemented as a single file but will be refactored into multiple modules for improved maintainability. Planned improvements include:
 
+IMMEDIATE:
+- Update the average atom positions to handle wrapping of atoms - highly mobile ions will currently not be properly represented.
+
+FUTURE:
 - Multi-file architecture with MVC pattern
 - Additional visualisation modes
 - Export functionality for images and videos
