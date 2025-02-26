@@ -1,6 +1,6 @@
 # DensMD
 
-A PyQt5-based application for visualising atomic trajectory data in 3D, designed specifically for molecular dynamics analysis.
+A PyQt5-based application for visualising atomic trajectory data (constant volume) in 3D, designed specifically for molecular dynamics analysis.
 
 ![Main Interface](images/densmd_ui.png)
 
