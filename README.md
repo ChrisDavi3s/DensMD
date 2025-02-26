@@ -78,7 +78,7 @@ DensMD provides a powerful, interactive GUI for loading molecular dynamics traje
 
 2. Run the application:
    ```bash
-   python plotter.py
+   python run_densmd.py
    ```
 
 3. Use the control panel on the right to:
