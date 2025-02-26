@@ -170,7 +170,7 @@ class DensityVisualiser(QtWidgets.QMainWindow):
 
     def _init_window_properties(self) -> None:
         """Initialize basic window properties and core parameters."""
-        self.setWindowTitle("Atom Density Visualisation")
+        self.setWindowTitle("DensMD")
         self.atom_type_map = ATOM_TYPE_MAP
         self.grid_resolution = GRID_RESOLUTION
         self.rotation_azimuth = ROTATION_AZIMUTH
@@ -258,6 +258,10 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         
         self.control_layout.addWidget(miller_group)
         self.miller_controls.setVisible(False)
+
+        self.align_miller_button = QtWidgets.QPushButton("View Miller Plane")
+        self.align_miller_button.clicked.connect(self.align_miller_view)
+        miller_controls_layout.addWidget(self.align_miller_button)
 
     def _init_atom_settings(self) -> None:
         """Initialize atom-specific visualization settings."""
@@ -729,10 +733,10 @@ class DensityVisualiser(QtWidgets.QMainWindow):
             ui["cmap_label"].setVisible(False)
 
     def schedule_update(self, value: Optional[Any] = None) -> None:
-        """Schedule a visualisation update after UI parameter changes.
-        
-        Uses a timer to debounce rapid successive changes.
-        """
+        """Schedule a visualisation update after UI parameter changes."""
+        # Consider adding a small delay to batch updates during slider movements
+        if self.update_timer.isActive():
+            self.update_timer.stop()
         self.update_timer.start()
 
     def choose_color(self, atype: str, btn: QtWidgets.QPushButton) -> None:
@@ -1066,11 +1070,27 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         focal_point = self._compute_focal_point(
             roi_indices, grid_params, phys_bounds, miller_params
         )
-        
-        # 5. Miller mask
-        miller_mask = self._compute_miller_mask(
-            grid_coords, grid_params['cell_center'], miller_params
-        ) if miller_params['use_miller'] else None
+
+        # 5. Miller mask - Calculate only when needed
+        miller_params = self._get_miller_parameters()
+        miller_mask = None
+        need_recalc = False
+
+        # Check if we need to recalculate the mask
+        if miller_params['use_miller']:
+            need_recalc = (not hasattr(self, '_cached_miller_mask') or 
+                        not hasattr(self, '_cached_miller_params') or
+                        self._cached_miller_params != miller_params or
+                        not hasattr(self, '_cached_roi_indices') or
+                        self._cached_roi_indices != roi_indices)
+            
+        if miller_params['use_miller'] and need_recalc:
+            miller_mask = self._compute_miller_mask(grid_coords, grid_params['cell_center'], miller_params)
+            self._cached_miller_mask = miller_mask
+            self._cached_miller_params = miller_params.copy()
+            self._cached_roi_indices = roi_indices.copy()
+        elif miller_params['use_miller']:
+            miller_mask = self._cached_miller_mask
 
         return {
             'roi_indices': roi_indices,
@@ -1177,22 +1197,17 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         """
 
         if miller_params['use_miller'] and miller_params['n'] is not None:
-            # Compute using voxel sampling
-            dims = (
-                roi_indices['xmax'] - roi_indices['xmin'] + 1,
-                roi_indices['ymax'] - roi_indices['ymin'] + 1,
-                roi_indices['zmax'] - roi_indices['zmin'] + 1
-            )
             
-            # Create grid indices
-            grid_indices = np.indices(dims, dtype=np.float64)
+            sample_count = self.global_cell_dims.prod() // 5
             
-            # Convert to physical coordinates
-            voxel_centers = np.stack([
-                grid_params['origin'][0] + (roi_indices['xmin'] + grid_indices[0] + 0.5) * grid_params['spacing'][0],
-                grid_params['origin'][1] + (roi_indices['ymin'] + grid_indices[1] + 0.5) * grid_params['spacing'][1],
-                grid_params['origin'][2] + (roi_indices['zmin'] + grid_indices[2] + 0.5) * grid_params['spacing'][2]
-            ], axis=-1).reshape(-1, 3)
+            # Generate random samples within ROI
+            random_samples = np.random.random((sample_count, 3))
+            voxel_centers = np.array([
+                grid_params['origin'][0] + (roi_indices['xmin'] + random_samples[:, 0] * (roi_indices['xmax'] - roi_indices['xmin'])) * grid_params['spacing'][0],
+                grid_params['origin'][1] + (roi_indices['ymin'] + random_samples[:, 1] * (roi_indices['ymax'] - roi_indices['ymin'])) * grid_params['spacing'][1],
+                grid_params['origin'][2] + (roi_indices['zmin'] + random_samples[:, 2] * (roi_indices['zmax'] - roi_indices['zmin'])) * grid_params['spacing'][2]
+            ]).T
+
             
             # Compute distances to Miller plane
             distances = np.abs(
@@ -1225,16 +1240,12 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         """
         if not miller_params['use_miller'] or miller_params['n'] is None:
             return None
-        
+            
         X, Y, Z = grid_coords
         n = miller_params['n']
         
-        distances = np.abs(
-            (X - cell_center[0]) * n[0] +
-            (Y - cell_center[1]) * n[1] +
-            (Z - cell_center[2]) * n[2] -
-            miller_params['offset']
-        )
+        coords = np.stack([X, Y, Z], axis=-1)
+        distances = np.abs(np.sum((coords - cell_center) * n, axis=-1) - miller_params['offset'])
         
         return distances < (miller_params['thickness'] / 2)
 
