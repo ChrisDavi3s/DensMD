@@ -1,0 +1,8 @@
+numpy>=1.18.0
+scipy>=1.5.0
+pyvista>=0.30.0
+pyvistaqt>=0.6.0
+PyQt5>=5.15.0
+vtk>=9.0.0
+ase>=3.20.0
+tqdm>=4.45.0
