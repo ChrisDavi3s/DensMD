@@ -37,14 +37,9 @@ DensMD provides a powerful, interactive GUI for loading molecular dynamics traje
 
 ## Screenshots
 
-![Density Visualisation](images/density_mode.png)
-*Density histogram visualisation with custom colourmap*
+A miller slice of 2 atom types shown as differently coloured histograms, and the average positions of a thrid atom type plotted.
 
-![Averaged Positions](images/averaged_positions.png)
-*Averaged atomic positions visualisation*
-
-![Miller Slicing](images/miller_slicing.png)
-*Miller plane slicing functionality*
+![Miller Slicing](images/ui_miller_slicing.png)
 
 ## Installation
 
