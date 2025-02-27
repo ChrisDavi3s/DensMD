@@ -38,19 +38,23 @@ import pickle
 
 # Input/Output Configuration
 INPUT_FILE_CONFIG = {
-    'path': '/Users/chrisdavies/Downloads/MD.log1-10.pickle',
-    'format': 'pickle',  # 'pickle' or 'ase'
-    'slice': "::10",  # ASE index string (e.g. ':' for all frames, '::2' for every 2nd frame) or a slice object
+    'path': '/Users/chrisdavies/Desktop/long_traj_Li6PS5Br_87_13_1000K_1000k_1.000000ns.dat',
+    'format': 'ase',  # 'pickle' or 'ase'
+    'slice': ":",  # ASE index string (e.g. ':' for all frames, '::2' for every 2nd frame) or a slice object
 }
 
 # Atom type mapping for visualization (None to use original types)
 # THIS IS AN EXAMPLE SETUP
 ATOM_TYPE_MAP = {
-    'H': 'Cs',
-    'He': 'Pb',
-    'Li': 'I',
-    'Be': 'Sn'
+    'H': 'Li',
+    'He': 'P',
+    'Li': 'S',
+    'Be': 'Br'
 }
+
+# Where to get the average positions from
+AVERAGE_POSITIONS_FRAME_SLICE = slice(10000, 10001) # DEFAULT: slice(None)
+# THIS IS A MESSY WORKAROUND TO GET AROUND WRAPPING ISSUES
 
 # Application Constants and Configuration
 GRID_RESOLUTION = 200  # Fixed grid resolution for histogram binning
@@ -64,7 +68,7 @@ WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 MAIN_PANEL_RATIO = 3   # Ratio of plotter to control panel width
 
-# Visualization Parameters
+# Visualisation Parameters
 SPHERE_SIZE_RANGE = (1, 50)
 SPHERE_SIZE_DEFAULT = 5
 DENSITY_RANGE = (0, 255)
@@ -79,16 +83,6 @@ MILLER_THICKNESS_RANGE = (0.1, 20.0)
 MILLER_THICKNESS_DEFAULT = 2.0
 MILLER_OFFSET_RANGE = (-10.0, 10.0)
 MILLER_OFFSET_DEFAULT = 0.0
-
-# Atom Type Mapping
-# Maps input atom types to desired visualization types
-# Make this None to use the original atom types
-ATOM_TYPE_MAP = {
-    'H': 'Cs',
-    'He': 'Pb',
-    'Li': 'I',
-    'Be': 'Sn'
-}
 
 # Available Colormaps - these are the colormaps available in matplotlib
 # See:https://matplotlib.org/stable/users/explain/colors/colormaps.html
@@ -136,7 +130,12 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         7. Timer and visualization initialization
         """
         super().__init__()
-        
+
+         # Initialize cache for region data
+        self._region_data_cache = None
+        self._last_roi_hash = None
+        self._last_miller_hash = None
+
         # Initialize basic window properties and core parameters
         self._init_window_properties()
         
@@ -265,7 +264,7 @@ class DensityVisualiser(QtWidgets.QMainWindow):
 
     def _init_atom_settings(self) -> None:
         """Initialize atom-specific visualization settings."""
-        self.load_and_precompute()
+        self.load_and_precompute(INPUT_FILE_CONFIG)
         self.atom_settings_widgets = {}
         
         for atype in sorted(self.atom_data.keys()):
@@ -815,11 +814,7 @@ class DensityVisualiser(QtWidgets.QMainWindow):
 
         """
         if input_config is None:
-            input_config = {
-                'path': '/Users/chrisdavies/Downloads/MD.log1-10.pickle',
-                'format': 'pickle',
-                'slice': "::10",
-            }
+            raise ValueError("No input configuration provided")
 
         file_path = input_config.get('path')
         file_format = input_config.get('format')
@@ -841,7 +836,6 @@ class DensityVisualiser(QtWidgets.QMainWindow):
                 self.frames = self.frames[frames_slice]
         elif file_format == 'ase':
             from ase.io import read
-            ase_index = frames_slice  # Here you might want to customize for ASE
             self.frames = read(file_path, index=frames_slice)
         else:
             raise ValueError(f"Unsupported file format: {file_format}")
@@ -936,7 +930,7 @@ class DensityVisualiser(QtWidgets.QMainWindow):
             # Flatten the first two dimensions to obtain all positions for the histogram.
             global_positions = trajectories.reshape(-1, 3)
             # Compute the per-atom average over the frame axis.
-            individual_averages = np.mean(trajectories, axis=0)
+            individual_averages = np.mean(trajectories[AVERAGE_POSITIONS_FRAME_SLICE], axis=0)
             results[atype] = {
                 'global_positions': global_positions,
                 'individual_averages': individual_averages,
@@ -992,7 +986,6 @@ class DensityVisualiser(QtWidgets.QMainWindow):
             mode = ui["mode_combo"].currentText()
             if mode == "Hidden":
                 continue
-                
             if mode == "Histogram":
                 self._visualise_histogram(atype, ui, region_data)
             elif mode == "Averaged Positions":
@@ -1057,50 +1050,69 @@ class DensityVisualiser(QtWidgets.QMainWindow):
                 'miller_mask': Boolean mask for Miller slicing
             }
         """
+        # Generate hash values for current settings
+        roi_hash = hash(tuple(sorted(roi_indices.items())))
+        miller_params = self._get_miller_parameters()
+        miller_hash = hash((
+            miller_params['use_miller'],
+            miller_params['h'],
+            miller_params['k'],
+            miller_params['l'],
+            miller_params['thickness'],
+            miller_params['offset']
+        ))
+        
+        # Check cache for reuse
+        if (self._region_data_cache is not None and
+            roi_hash == self._last_roi_hash and
+            miller_hash == self._last_miller_hash):
+            # Cache hit - return the cached data
+            print("Using cached region data")
+            return self._region_data_cache
+        
+        # Cache miss - compute new region data
+        print("Computing new region data")
+        
         # 1. Physical bounds
         phys_bounds = self._compute_physical_bounds(roi_indices, grid_params)
         
-        # 2. Grid coordinates
-        grid_coords = self._compute_grid_coordinates(phys_bounds, grid_params['spacing'])
-        
-        # 3. Miller parameters
-        miller_params = self._get_miller_parameters()
-        
-        # 4. Focal point
-        focal_point = self._compute_focal_point(
-            roi_indices, grid_params, phys_bounds, miller_params
-        )
+        if miller_params['use_miller'] and miller_params['n'] is not None:
+            # Compute voxel centers and mask in one pass.
+            roi_voxel_centers, miller_mask = self.compute_roi_miller_mask(roi_indices, grid_params, miller_params)
+        else:
+            miller_mask = None
+            roi_voxel_centers = None  # if needed later
 
-        # 5. Miller mask - Calculate only when needed
-        miller_params = self._get_miller_parameters()
-        miller_mask = None
-        need_recalc = False
+        # Optionally, compute the focal point as the mean of the masked voxel centers.
+        if miller_mask is not None and np.any(miller_mask):
+            # Take a strided sample of both arrays together
+            sample_voxel_centers = roi_voxel_centers[::5, ::5, ::5]
+            sample_mask = miller_mask[::5, ::5, ::5]
+            if np.any(sample_mask):
+                # Only use the points that are in the mask
+                focal_point = sample_voxel_centers[sample_mask].mean(axis=0)
+            else:
+                focal_point = 0.5 * (phys_bounds[0] + phys_bounds[1])
+        else:
+            focal_point = 0.5 * (phys_bounds[0] + phys_bounds[1])
 
-        # Check if we need to recalculate the mask
-        if miller_params['use_miller']:
-            need_recalc = (not hasattr(self, '_cached_miller_mask') or 
-                        not hasattr(self, '_cached_miller_params') or
-                        self._cached_miller_params != miller_params or
-                        not hasattr(self, '_cached_roi_indices') or
-                        self._cached_roi_indices != roi_indices)
-            
-        if miller_params['use_miller'] and need_recalc:
-            miller_mask = self._compute_miller_mask(grid_coords, grid_params['cell_center'], miller_params)
-            self._cached_miller_mask = miller_mask
-            self._cached_miller_params = miller_params.copy()
-            self._cached_roi_indices = roi_indices.copy()
-        elif miller_params['use_miller']:
-            miller_mask = self._cached_miller_mask
-
-        return {
+        # Store the computed data
+        region_data = {
             'roi_indices': roi_indices,
             'phys_bounds': phys_bounds,
-            'grid_coords': grid_coords,
-            'miller_params': miller_params,
-            'focal_point': focal_point,
+            'roi_voxel_centers': roi_voxel_centers,
             'miller_mask': miller_mask,
-            'grid_params': grid_params
+            'focal_point': focal_point,
+            'grid_params': grid_params,
+            'miller_params': miller_params
         }
+        
+        # Update cache
+        self._region_data_cache = region_data
+        self._last_roi_hash = roi_hash
+        self._last_miller_hash = miller_hash
+        
+        return region_data
 
     def _compute_physical_bounds(self, roi_indices: Dict[str, int],
                                grid_params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
@@ -1130,26 +1142,67 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         
         return roi_min, roi_max
 
-    def _compute_grid_coordinates(self, phys_bounds: Tuple[np.ndarray, np.ndarray],
-                                spacing: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Generate physical coordinates for ROI voxel centers.
-        
-        Args:
-            phys_bounds: (min, max) physical coordinates
-            spacing: Voxel spacing
-            
-        Returns:
-            Tuple of (X, Y, Z) meshgrid arrays for voxel centers
+    def compute_roi_miller_mask(self, roi_indices: Dict[str, int],
+                            grid_params: Dict[str, Any],
+                            miller_params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
         """
-        roi_min, roi_max = phys_bounds
-        dims = ((roi_max - roi_min) / spacing + 1).astype(int)
-        
-        return np.meshgrid(
-            np.linspace(roi_min[0] + spacing[0]/2, roi_max[0] - spacing[0]/2, dims[0]),
-            np.linspace(roi_min[1] + spacing[1]/2, roi_max[1] - spacing[1]/2, dims[1]),
-            np.linspace(roi_min[2] + spacing[2]/2, roi_max[2] - spacing[2]/2, dims[2]),
-            indexing='ij'
-        )
+        Compute voxel centers for the ROI and return a Boolean mask according to the Miller slicing.
+
+        Args:
+            roi_indices: Dictionary with keys 'xmin', 'xmax', etc.
+            grid_params: Dictionary containing 'origin', 'spacing', and 'cell_center'.
+            miller_params: Dictionary containing 'use_miller', 'n', 'thickness', and 'offset'.
+
+        Returns:
+            A tuple (voxel_centers, mask) where:
+            - voxel_centers is an array of shape (Nx, Ny, Nz, 3) holding the physical coordinates.
+            - mask is a Boolean array of shape (Nx, Ny, Nz) indicating voxels within the slice.
+        """
+        spacing = grid_params['spacing']
+        origin = grid_params['origin']
+        # Compute ROI physical origin
+        roi_origin = origin + np.array([roi_indices['xmin'],
+                                        roi_indices['ymin'],
+                                        roi_indices['zmin']]) * spacing
+        dims = np.array([roi_indices['xmax'] - roi_indices['xmin'] + 1,
+                        roi_indices['ymax'] - roi_indices['ymin'] + 1,
+                        roi_indices['zmax'] - roi_indices['zmin'] + 1])
+
+        # Create coordinate arrays for each axis, placing voxel centers at mid-voxel.
+        x = roi_origin[0] + (np.arange(dims[0]) + 0.5) * spacing[0]
+        y = roi_origin[1] + (np.arange(dims[1]) + 0.5) * spacing[1]
+        z = roi_origin[2] + (np.arange(dims[2]) + 0.5) * spacing[2]
+        X, Y, Z = np.meshgrid(x, y, z, indexing='ij')
+        voxel_centers = np.stack([X, Y, Z], axis=-1)
+
+        # Compute distances from each voxel center to the Miller plane.
+        cell_center = grid_params['cell_center']
+        n = miller_params['n']  # already normalized if valid
+        distances = np.abs(np.sum((voxel_centers - cell_center) * n, axis=-1) -
+                        miller_params['offset'])
+        mask = distances < (miller_params['thickness'] / 2)
+
+        return voxel_centers, mask
+
+    def filter_points_by_miller(self, points: np.ndarray,
+                            cell_center: np.ndarray,
+                            miller_params: Dict[str, Any]) -> np.ndarray:
+        """
+        Filters a set of points according to the Miller slicing parameters.
+
+        Args:
+            points: Array of shape (N, 3) containing 3D points.
+            cell_center: The central coordinate of the simulation cell.
+            miller_params: Dictionary with keys 'use_miller', 'n', 'thickness', and 'offset'.
+
+        Returns:
+            Filtered array of points within the Miller slice.
+        """
+        if miller_params['use_miller'] and miller_params['n'] is not None:
+            distances = np.abs(np.dot(points - cell_center, miller_params['n']) -
+                            miller_params['offset'])
+            return points[distances < (miller_params['thickness'] / 2)]
+        return points
 
     def _get_miller_parameters(self) -> Dict[str, Any]:
         """Get current Miller slicing parameters.
@@ -1180,75 +1233,6 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         
         return params
 
-    def _compute_focal_point(self, roi_indices: Dict[str, int],
-                           grid_params: Dict[str, Any], 
-                           phys_bounds: Tuple[np.ndarray, np.ndarray],
-                           miller_params: Dict[str, Any]) -> np.ndarray:
-        """Calculate optimal focal point for current view.
-        
-        Args:
-            roi_indices: Region-of-interest grid indices
-            grid_params: Grid metadata
-            phys_bounds: Physical ROI bounds
-            miller_params: Miller slicing parameters
-            
-        Returns:
-            3D focal point coordinates
-        """
-
-        if miller_params['use_miller'] and miller_params['n'] is not None:
-            
-            sample_count = self.global_cell_dims.prod() // 5
-            
-            # Generate random samples within ROI
-            random_samples = np.random.random((sample_count, 3))
-            voxel_centers = np.array([
-                grid_params['origin'][0] + (roi_indices['xmin'] + random_samples[:, 0] * (roi_indices['xmax'] - roi_indices['xmin'])) * grid_params['spacing'][0],
-                grid_params['origin'][1] + (roi_indices['ymin'] + random_samples[:, 1] * (roi_indices['ymax'] - roi_indices['ymin'])) * grid_params['spacing'][1],
-                grid_params['origin'][2] + (roi_indices['zmin'] + random_samples[:, 2] * (roi_indices['zmax'] - roi_indices['zmin'])) * grid_params['spacing'][2]
-            ]).T
-
-            
-            # Compute distances to Miller plane
-            distances = np.abs(
-                np.dot(voxel_centers - grid_params['cell_center'], miller_params['n']) -
-                miller_params['offset']
-            )
-            
-            # Get voxels within slice thickness
-            mask = distances < (miller_params['thickness'] / 2)
-            valid_voxels = voxel_centers[mask]
-            
-            if valid_voxels.size > 0:
-                return valid_voxels.mean(axis=0)
-        
-        # Fallback to geometric center
-        return 0.5 * (phys_bounds[0] + phys_bounds[1])
-
-    def _compute_miller_mask(self, grid_coords: Tuple[np.ndarray, np.ndarray, np.ndarray],
-                           cell_center: np.ndarray,
-                           miller_params: Dict[str, Any]) -> Optional[np.ndarray]:
-        """Compute boolean mask for Miller plane slicing.
-        
-        Args:
-            grid_coords: Voxel coordinate meshgrid
-            cell_center: Simulation cell center
-            miller_params: Miller slicing parameters
-            
-        Returns:
-            3D boolean array indicating voxels within slice, or None
-        """
-        if not miller_params['use_miller'] or miller_params['n'] is None:
-            return None
-            
-        X, Y, Z = grid_coords
-        n = miller_params['n']
-        
-        coords = np.stack([X, Y, Z], axis=-1)
-        distances = np.abs(np.sum((coords - cell_center) * n, axis=-1) - miller_params['offset'])
-        
-        return distances < (miller_params['thickness'] / 2)
-
     def _visualise_histogram(self, atype: str, ui: Dict[str, Any],
                            region_data: Dict[str, Any]) -> None:
         """Visualise density histogram for given atom type.
@@ -1259,10 +1243,12 @@ class DensityVisualiser(QtWidgets.QMainWindow):
             region_data: Precomputed region data
         """
         # Extract region data
-        grid_coords = region_data['grid_coords']
+        roi_indices = region_data['roi_indices']
+        phys_bounds = region_data['phys_bounds']
+        grid_coords = region_data['roi_voxel_centers']
         miller_mask = region_data['miller_mask']
         spacing = region_data['grid_params']['spacing']
-        
+
         # Get histogram data subset
         hist_data = self.atom_data[atype]['histogram_data']['data']
         sub_data = hist_data[
@@ -1272,8 +1258,11 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         ]
         
         # Apply Miller mask if available
-        filtered_data = np.where(miller_mask, sub_data, 0) if miller_mask is not None else sub_data
-        
+        if miller_mask is not None:
+            filtered_data = np.where(miller_mask, sub_data, 0)
+        else:
+            filtered_data = sub_data
+
         # Normalisation and thresholding
         norm_data = self._histogram_normalise_gamma(filtered_data)
         lower = ui["density_lower"]["slider"].value() / 255.0
@@ -1283,7 +1272,7 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         # Create volume
         vol = pv.ImageData()
         vol.dimensions = np.array(sub_data.shape) + 1
-        vol.origin = (grid_coords[0].min(), grid_coords[1].min(), grid_coords[2].min())
+        vol.origin = (phys_bounds[0][0], phys_bounds[0][1], phys_bounds[0][2])
         vol.spacing = spacing
         vol.cell_data["density"] = thresh_data.ravel(order="F")
         
@@ -1328,12 +1317,7 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         filtered_points = points[in_roi]
         
         # Miller plane filtering
-        if miller_params['use_miller'] and miller_params['n'] is not None:
-            distances = np.abs(
-                np.dot(filtered_points - cell_center, miller_params['n']) - 
-                miller_params['offset']
-            )
-            filtered_points = filtered_points[distances < (miller_params['thickness'] / 2)]
+        filtered_points = self.filter_points_by_miller(filtered_points, cell_center, miller_params)
         
         if filtered_points.size == 0:
             return
@@ -1531,6 +1515,7 @@ class DensityVisualiser(QtWidgets.QMainWindow):
 
     @rendered_actors.setter
     def rendered_actors(self, value: Dict[str, Any]) -> None:
+        """Update the currently active VTK actors."""
         self._rendered_actors = value
 
     ###############################################################
