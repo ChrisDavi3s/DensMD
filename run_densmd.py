@@ -21,10 +21,11 @@ Copyright (c) 2025 Chris Davies
 import numpy as np
 from scipy.ndimage import gaussian_filter
 import pyvista as pv
+import matplotlib.pyplot as plt
 from pyvistaqt import QtInteractor
 from typing import List, Dict, Tuple, Optional
 from typing import Any, Dict, Tuple, Optional
-from vtk import vtkPiecewiseFunction
+from vtk import VTK_CUBIC_INTERPOLATION
 from PyQt5 import QtWidgets, QtCore, QtGui
 import random
 from ase.io import read
@@ -75,6 +76,8 @@ DENSITY_RANGE = (0, 255)
 DENSITY_LOWER_DEFAULT = 77
 DENSITY_UPPER_DEFAULT = 178
 OPACITY_DEFAULT = 100
+GAMMA_RANGE    = (0.0, 2.0)
+GAMMA_DEFAULT  = 0.0
 
 # Miller Indices Configuration
 MILLER_INDEX_RANGE = (-10, 10)
@@ -98,6 +101,44 @@ AVAILABLE_COLORMAPS = [
     "Greens",
     "Purples"
 ]
+
+def _calculate_roi_bounds(roi_def: Optional[Dict], cell: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Calculates the absolute min/max bounds based on ROI definition."""
+    if roi_def is None:
+        # Use full cell if no ROI is defined
+        corners = np.array([np.dot(np.array([i, j, k]), cell)
+                            for i in (0, 1) for j in (0, 1) for k in (0, 1)])
+        roi_min = corners.min(axis=0)
+        roi_max = corners.max(axis=0)
+        print("No initial ROI defined, using full cell.")
+        return roi_min, roi_max
+
+    roi_type = roi_def.get('type', 'absolute')
+    bounds = roi_def.get('bounds')
+
+    if bounds is None:
+        raise ValueError("ROI definition must include 'bounds'")
+
+    if roi_type == 'fractional':
+        fbounds = np.array(bounds)
+        # Generate 8 corners of the fractional box
+        f_corners = np.array([
+            (fbounds[0, i], fbounds[1, j], fbounds[2, k])
+            for i in (0, 1) for j in (0, 1) for k in (0, 1)
+        ])
+        # Convert fractional corners to absolute Cartesian coordinates
+        abs_corners = np.dot(f_corners, cell)
+        roi_min = abs_corners.min(axis=0)
+        roi_max = abs_corners.max(axis=0)
+        print(f"Calculated initial ROI bounds (fractional): {roi_min} to {roi_max}")
+    elif roi_type == 'absolute':
+        roi_min = np.array([b[0] for b in bounds])
+        roi_max = np.array([b[1] for b in bounds])
+        print(f"Using initial ROI bounds (absolute): {roi_min} to {roi_max}")
+    else:
+        raise ValueError(f"Unknown ROI type: {roi_type}")
+
+    return roi_min, roi_max
 
 ###############################################################
 # MAIN APPLICATION CLASS
@@ -147,6 +188,9 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         
         # Set up global slicing controls
         self._init_global_slicing()
+
+        # Initialize Gaussian smoothing controls
+        self._init_smoothing_controls()
         
         # Configure view and rotation controls
         self._init_view_controls()
@@ -239,6 +283,16 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         global_layout.addWidget(view_controls)
         global_layout.addWidget(rotation_controls)
         global_layout.addWidget(self.reset_view_button)
+
+    def _init_smoothing_controls(self) -> None:
+        """Initialize Gaussian smoothing controls."""
+        smoothing_group = QtWidgets.QGroupBox("Smoothing Settings")
+        smoothing_layout = QtWidgets.QVBoxLayout(smoothing_group)
+        self.sigma_slider_obj = self.create_labelled_slider(
+            "Gaussian Sigma", 0, 20, GAUSSIAN_SIGMA, smoothing_layout
+        )
+        # Add the smoothing group to the main control layout:
+        self.control_layout.addWidget(smoothing_group)
 
     def _init_miller_controls(self) -> None:
         """Initialize Miller indices slicing controls."""
@@ -473,7 +527,15 @@ class DensityVisualiser(QtWidgets.QMainWindow):
             SPHERE_SIZE_DEFAULT,
             group_layout
         )
-        
+        # Gamma correction control for histogram
+        gamma_spinbox = self.create_labelled_double_spinbox(
+            "Opacity Gamma",
+            GAMMA_RANGE[0],
+            GAMMA_RANGE[1],
+            GAMMA_DEFAULT,
+            0.1,
+            group_layout
+        )
         # Color selector
         random_color = "#%06x" % random.randint(0, 0xFFFFFF)
         color_button = QtWidgets.QPushButton("Select Color")
@@ -491,6 +553,7 @@ class DensityVisualiser(QtWidgets.QMainWindow):
             "density_upper": density_upper,
             "opacity_slider": opacity_slider,
             "sphere_slider": sphere_slider,
+            "opacity_gamma_spinbox": gamma_spinbox,
             "color_button": color_button,
             "cmap_combo": cmap_combo,
             "cmap_label": cmap_label,
@@ -706,30 +769,20 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         """
         ui = self.atom_settings_widgets[atype]
         mode = ui["mode_combo"].currentText()
-        if mode == "Histogram":
-            ui["density_lower"]["container"].setVisible(True)
-            ui["density_upper"]["container"].setVisible(True)
-            ui["opacity_slider"]["container"].setVisible(True)
-            ui["sphere_slider"]["container"].setVisible(False)
-            ui["color_button"].setVisible(False)
-            ui["cmap_combo"].setVisible(True)
-            ui["cmap_label"].setVisible(True)
-        elif mode == "Averaged Positions":
-            ui["density_lower"]["container"].setVisible(False)
-            ui["density_upper"]["container"].setVisible(False)
-            ui["opacity_slider"]["container"].setVisible(False)
-            ui["sphere_slider"]["container"].setVisible(True)
-            ui["color_button"].setVisible(True)
-            ui["cmap_combo"].setVisible(False)
-            ui["cmap_label"].setVisible(False)
-        else:  # Hidden
-            ui["density_lower"]["container"].setVisible(False)
-            ui["density_upper"]["container"].setVisible(False)
-            ui["opacity_slider"]["container"].setVisible(False)
-            ui["sphere_slider"]["container"].setVisible(False)
-            ui["color_button"].setVisible(False)
-            ui["cmap_combo"].setVisible(False)
-            ui["cmap_label"].setVisible(False)
+        is_histogram = (mode == "Histogram")
+        is_average = (mode == "Averaged Positions")
+
+        # Make histogram-specific controls visible/invisible
+        ui["density_lower"]["container"].setVisible(is_histogram)
+        ui["density_upper"]["container"].setVisible(is_histogram)
+        ui["opacity_slider"]["container"].setVisible(is_histogram)
+        ui["opacity_gamma_spinbox"].parentWidget().setVisible(is_histogram) 
+        ui["cmap_combo"].setVisible(is_histogram)
+        ui["cmap_label"].setVisible(is_histogram)
+
+        # Make average-specific controls visible/invisible
+        ui["sphere_slider"]["container"].setVisible(is_average)
+        ui["color_button"].setVisible(is_average)
 
     def schedule_update(self, value: Optional[Any] = None) -> None:
         """Schedule a visualisation update after UI parameter changes."""
@@ -789,29 +842,23 @@ class DensityVisualiser(QtWidgets.QMainWindow):
 
     def load_and_precompute(self, input_config: Optional[Dict[str, Any]] = None) -> None:
         """
-        Load atomic trajectory data from file and compute per-species statistics.
+        Load atomic trajectory data, apply initial ROI filtering, and compute per-species statistics.
 
         Algorithm:
-          1. Loads frames from the file (using pickle or ase formats).
-          2. Uses the first frame to determine the unique species and their indices.
-          3. Stacks the per-frame positions into a 3D NumPy array for vectorised indexing.
-          4. Computes, for each species, (a) a flattened array of global positions and
-             (b) the per-atom averaged positions (by stacking the trajectory over frames).
-          5. Computes the cell boundaries from the first frame’s cell (and its 8 corners)
-             so the global histogram grid can be determined.
-          6. For each species, generates a 3D histogram from the global positions, applies
-             Gaussian smoothing, and stores density information.
+          1. Loads frames from the file.
+          2. Determines initial ROI absolute bounds (roi_min, roi_max).
+          3. Uses the first frame to determine unique species and indices.
+          4. Stacks per-frame positions.
+          5. Filters positions based on the initial ROI.
+          6. Computes filtered global positions and filtered averaged positions per species.
+          7. Defines the grid based on the initial ROI bounds.
+          8. Computes histograms using filtered data and the ROI-based grid.
 
-                
         Args:
-            input_config: Optional configuration override dict with keys:
-                - path: Input file path
-                - format: File format ('pickle' or 'ase')
-                - slice: Frame slicing specification
-                
-        Raises:
-            ValueError: For unsupported file formats
+            input_config: Optional configuration override dict.
 
+        Raises:
+            ValueError: For unsupported file formats or invalid ROI.
         """
         if input_config is None:
             raise ValueError("No input configuration provided")
@@ -820,7 +867,6 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         file_format = input_config.get('format')
         frames_slice = input_config.get('slice')
 
-        # Convert slice string (e.g. "::10") to a proper slice object.
         if isinstance(frames_slice, str):
             parts = frames_slice.split(':')
             nums = [int(p) if p else None for p in parts]
@@ -833,69 +879,101 @@ class DensityVisualiser(QtWidgets.QMainWindow):
             import pickle
             with open(file_path, 'rb') as f:
                 self.frames = pickle.load(f)
-                self.frames = self.frames[frames_slice]
+                if isinstance(frames_slice, slice): # Ensure slice is applied if provided
+                     self.frames = self.frames[frames_slice]
         elif file_format == 'ase':
             from ase.io import read
             self.frames = read(file_path, index=frames_slice)
         else:
             raise ValueError(f"Unsupported file format: {file_format}")
 
+        if not self.frames:
+             raise ValueError("No frames loaded. Check file path and slice.")
+
         print(f"Loaded {len(self.frames)} frames")
 
-        # Assume the ordering of atoms is consistent; use the first frame to get species.
         first_frame = self.frames[0]
+        cell = first_frame.get_cell() # Get cell for coordinate transformations
+
+        self.initial_roi_min, self.initial_roi_max = _calculate_roi_bounds(ROI_DEFINITION, cell)
+
         symbols_first: List[str] = self._get_chemical_symbols_mapped(first_frame)
         unique_types: List[str] = sorted(set(symbols_first))
 
-        # Precompute index mapping: for each species, record a NumPy array of indices.
         indices_map: Dict[str, np.ndarray] = {
             atype: np.array([i for i, sym in enumerate(symbols_first) if sym == atype])
             for atype in unique_types
         }
 
-        # Vectorised processing: stack all frame positions into one 3D array.
-        # all_positions has shape (n_frames, natoms, 3)
         print("Processing frames (vectorised stacking)...")
         positions_array = np.stack([frame.get_positions() for frame in self.frames], axis=0)
 
-        # Use the helper to compute per-species trajectories
-        species_data = self._process_frames(positions_array, indices_map)
-
-        # Store results in self.atom_data: for each species, store the global positions
-        # and the individual per-atom averages.
+        species_data = self._process_frames(positions_array, indices_map,
+                                             self.initial_roi_min, self.initial_roi_max)
         self.atom_data = species_data
 
-        # --- Compute cell info for global histogram grid ---
-        cell = first_frame.get_cell()
-        # Compute the 8 corners of the cell.
-        corners = np.array([np.dot(np.array([i, j, k]), cell)
-                            for i in (0, 1) for j in (0, 1) for k in (0, 1)])
-        global_min = corners.min(axis=0)
-        global_max = corners.max(axis=0)
-        cell_lengths = global_max - global_min
+        if self.initial_roi_min is None or self.initial_roi_max is None:
+             # Fallback needed if _calculate_roi_bounds returned None (shouldn't happen with current logic)
+             raise RuntimeError("Initial ROI bounds not set correctly.")
+
+        global_min = self.initial_roi_min
+        global_max = self.initial_roi_max
+        roi_dimensions = global_max - global_min
+
+        # Ensure dimensions are non-zero to avoid division by zero
+        if np.any(roi_dimensions <= 1e-9):
+             print(f"Warning: Initial ROI dimension is zero or negative: {roi_dimensions}. Check ROI_DEFINITION.")
+             # Handle degenerate case - perhaps default to a small size or raise error
+             roi_dimensions = np.maximum(roi_dimensions, 1e-6) # Prevent zero division
+
         self.global_cell_origin = global_min
         nx = ny = nz = GRID_RESOLUTION
         self.global_cell_dims = np.array([nx, ny, nz])
-        self.global_spacing = cell_lengths / GRID_RESOLUTION
-        self.global_cell_center = global_min + cell_lengths / 2
+        # Adjust spacing calculation for potentially non-cubic ROI
+        self.global_spacing = roi_dimensions / (np.array([nx, ny, nz]) -1) # Use N-1 for spacing between N points
+        self.global_spacing = np.where(self.global_spacing == 0, 1e-6, self.global_spacing) # Avoid zero spacing
 
-        # --- Generate histogram data for each species using the calculated grid bounds ---
+        self.global_cell_center = global_min + roi_dimensions / 2
+
+        print(f"Grid defined over ROI: Origin={self.global_cell_origin}, Spacing={self.global_spacing}")
+
         for atype in tqdm(unique_types, desc="Computing histograms"):
-            positions = self.atom_data[atype]['global_positions']
-            xedges = np.linspace(global_min[0], global_max[0], nx + 1)
-            yedges = np.linspace(global_min[1], global_max[1], ny + 1)
-            zedges = np.linspace(global_min[2], global_max[2], nz + 1)
-            hist, _ = np.histogramdd(positions, bins=(xedges, yedges, zedges))
+            positions = self.atom_data[atype]['global_positions'] # These are already filtered by _process_frames
+            if positions.size == 0:
+                 print(f"Warning: No positions found for species {atype} within the initial ROI.")
+                 # Store empty/default data to prevent errors later
+                 self.atom_data[atype]['histogram_data'] = {
+                    'data': np.zeros((nx, ny, nz)),
+                    'sorted_data': np.array([0.0]),
+                    'origin': tuple(global_min),
+                    'spacing': tuple(self.global_spacing),
+                    'global_min': 0.0,
+                    'global_max': 0.0,
+                 }
+                 continue
 
-            # Apply Gaussian smoothing.
-            smoothed_hist = gaussian_filter(hist, sigma=GAUSSIAN_SIGMA)
-            # Instead of sorting, obtain min and max directly.
-            global_min_hist = float(smoothed_hist.min())
-            global_max_hist = float(smoothed_hist.max())
-            sorted_data = np.sort(smoothed_hist.ravel())
+            # Ensure edges cover the full range of the ROI grid
+            xedges = global_min[0] + np.arange(nx + 1) * self.global_spacing[0]
+            yedges = global_min[1] + np.arange(ny + 1) * self.global_spacing[1]
+            zedges = global_min[2] + np.arange(nz + 1) * self.global_spacing[2]
+            # Adjust the last edge to exactly match roi_max to handle potential float precision issues
+            xedges[-1] = global_max[0]
+            yedges[-1] = global_max[1]
+            zedges[-1] = global_max[2]
 
+            # Clip positions to be strictly within bins defined by edges to avoid histogram errors
+            # This is important if ROI bounds were slightly outside actual particle positions
+            positions_clipped = np.clip(positions, global_min, global_max - 1e-9) # Subtract small epsilon
+
+            hist, _ = np.histogramdd(positions_clipped, bins=(xedges, yedges, zedges))
+
+            raw_hist = hist
+            global_min_hist = float(raw_hist.min())
+            global_max_hist = float(raw_hist.max())
+            sorted_data = np.sort(raw_hist.ravel())
+            
             self.atom_data[atype]['histogram_data'] = {
-                'data': smoothed_hist,
+                'raw_data': raw_hist,
                 'sorted_data': sorted_data,
                 'origin': tuple(global_min),
                 'spacing': tuple(self.global_spacing),
@@ -903,37 +981,52 @@ class DensityVisualiser(QtWidgets.QMainWindow):
                 'global_max': global_max_hist,
             }
 
-        # Free temporary array if desired.
-        del positions_array
-        del self.frames
+        del positions_array # Free memory
+        if hasattr(self, 'frames'):
+             del self.frames # Free memory
 
+    # MODIFY this method
     def _process_frames(self, positions_array: np.ndarray,
-                       indices_map: Dict[str, np.ndarray]) -> Dict[str, Dict[str, np.ndarray]]:
-        """Process trajectory frames to compute per-species statistics.
-        
+                       indices_map: Dict[str, np.ndarray],
+                       roi_min: np.ndarray, roi_max: np.ndarray) -> Dict[str, Dict[str, np.ndarray]]:
+        """
+        Process trajectory frames to compute per-species statistics, filtered by initial ROI.
+
         Args:
             positions_array: Array of shape (n_frames, n_atoms, 3) containing all positions
             indices_map: Dictionary mapping species to atom indices
-            
+            roi_min: Minimum absolute coordinates of the initial ROI.
+            roi_max: Maximum absolute coordinates of the initial ROI.
+
         Returns:
-            Dictionary mapping species to processed data:
+            Dictionary mapping species to ROI-filtered processed data:
             {
-                'global_positions': All positions across frames (n, 3),
-                'individual_averages': Per-atom averaged positions (m, 3)
+                'global_positions': All positions within ROI across frames (n_filtered, 3),
+                'individual_averages': Per-atom averaged positions within ROI (m_filtered, 3)
             }
         """
         results: Dict[str, Dict[str, np.ndarray]] = {}
         for atype, indices in indices_map.items():
-            # Use NumPy’s advanced indexing to extract the positions corresponding to this species.
-            # trajectories has shape (n_frames, n_atoms, 3).
+            # trajectories shape: (n_frames, n_atoms_of_type, 3)
             trajectories = positions_array[:, indices, :]
-            # Flatten the first two dimensions to obtain all positions for the histogram.
-            global_positions = trajectories.reshape(-1, 3)
+            # Flatten to get all positions for this type: shape (n_frames * n_atoms_of_type, 3)
+            global_positions_unfiltered = trajectories.reshape(-1, 3)
+
+            roi_mask_global = np.all((global_positions_unfiltered >= roi_min) &
+                                     (global_positions_unfiltered <= roi_max), axis=1)
+            global_positions_filtered = global_positions_unfiltered[roi_mask_global]
+
             # Compute the per-atom average over the frame axis.
-            individual_averages = np.mean(trajectories[AVERAGE_POSITIONS_FRAME_SLICE], axis=0)
+            # shape: (n_atoms_of_type, 3)
+            individual_averages_unfiltered = np.mean(trajectories[AVERAGE_POSITIONS_FRAME_SLICE], axis=0)
+
+            roi_mask_avg = np.all((individual_averages_unfiltered >= roi_min) &
+                                  (individual_averages_unfiltered <= roi_max), axis=1)
+            individual_averages_filtered = individual_averages_unfiltered[roi_mask_avg]
+
             results[atype] = {
-                'global_positions': global_positions,
-                'individual_averages': individual_averages,
+                'global_positions': global_positions_filtered,
+                'individual_averages': individual_averages_filtered,
             }
         return results
 
@@ -1233,67 +1326,109 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         
         return params
 
-    def _visualise_histogram(self, atype: str, ui: Dict[str, Any],
-                           region_data: Dict[str, Any]) -> None:
-        """Visualise density histogram for given atom type.
-        
-        Args:
-            atype: Atom type identifier
-            ui: UI component dictionary
-            region_data: Precomputed region data
-        """
-        # Extract region data
-        roi_indices = region_data['roi_indices']
-        phys_bounds = region_data['phys_bounds']
-        grid_coords = region_data['roi_voxel_centers']
-        miller_mask = region_data['miller_mask']
-        spacing = region_data['grid_params']['spacing']
+    def _visualise_histogram(self, atype: str, ui: Dict[str, Any], region_data: Dict[str, Any]) -> None:
+        """Visualise histogram data with dynamic min/max based on current ROI and Miller slice."""
+        try:
+            hist_data = self.atom_data[atype]['histogram_data']
+            sigma = self.sigma_slider_obj["slider"].value()
+            raw_data = hist_data['raw_data']
 
-        # Get histogram data subset
-        hist_data = self.atom_data[atype]['histogram_data']['data']
-        sub_data = hist_data[
-            region_data['roi_indices']['xmin']:region_data['roi_indices']['xmax']+1,
-            region_data['roi_indices']['ymin']:region_data['roi_indices']['ymax']+1,
-            region_data['roi_indices']['zmin']:region_data['roi_indices']['zmax']+1
-        ]
-        
-        # Apply Miller mask if available
-        if miller_mask is not None:
-            filtered_data = np.where(miller_mask, sub_data, 0)
-        else:
-            filtered_data = sub_data
+            # Initialise the cache dict if needed.
+            if not hasattr(self, "_smoothed_hist_cache"):
+                self._smoothed_hist_cache = {}
 
-        # Normalisation and thresholding
-        norm_data = self._histogram_normalise_gamma(filtered_data)
-        lower = ui["density_lower"]["slider"].value() / 255.0
-        upper = ui["density_upper"]["slider"].value() / 255.0
-        thresh_data = np.where(lower <= upper, np.clip((norm_data - lower) / (upper - lower), 0, 1), 0)
+            # Compute a key from the sigma and raw_data content
+            cache_key = (sigma, hash(raw_data.tobytes()))
+            if cache_key in self._smoothed_hist_cache:
+                processed_data = self._smoothed_hist_cache[cache_key]
+            else:
+                if sigma > 0:
+                    processed_data = gaussian_filter(raw_data, sigma=sigma)
+                else:
+                    processed_data = raw_data
+                self._smoothed_hist_cache[cache_key] = processed_data
 
-        # Create volume
-        vol = pv.ImageData()
-        vol.dimensions = np.array(sub_data.shape) + 1
-        vol.origin = (phys_bounds[0][0], phys_bounds[0][1], phys_bounds[0][2])
-        vol.spacing = spacing
-        vol.cell_data["density"] = thresh_data.ravel(order="F")
-        
-        # Configure visualization
-        opacity = ui["opacity_slider"]["slider"].value() / 100.0
-        cmap = ui["cmap_combo"].currentText()
-        
-        actor = self.plotter.add_volume(
-            vol, cmap=cmap, clim=[0, 1],
-            scalar_bar_args={"title": f"Density: {atype}"}
-        )
-        
-        # Configure opacity transfer function
-        opacity_func = vtkPiecewiseFunction()
-        opacity_func.AddPoint(0.0, 0.0)
-        opacity_func.AddPoint(lower, 0.0)
-        opacity_func.AddPoint(upper, opacity)
-        actor.prop.SetScalarOpacity(0, opacity_func)
-        
-        self.rendered_actors[atype] = actor
+            sub_data = processed_data[
+                region_data['roi_indices']['xmin']:region_data['roi_indices']['xmax']+1,
+                region_data['roi_indices']['ymin']:region_data['roi_indices']['ymax']+1,
+                region_data['roi_indices']['zmin']:region_data['roi_indices']['zmax']+1
+            ]
 
+            # Apply Miller plane masking
+            miller_mask = region_data['miller_mask']
+            filtered_data = np.where(miller_mask, sub_data, 0) if miller_mask is not None else sub_data
+
+
+            # Calculate local min/max based on current view
+            if miller_mask is not None:
+                visible_data = sub_data[miller_mask]
+            else:
+                visible_data = sub_data.ravel()
+
+            if visible_data.size == 0:
+                return  # No data to visualize
+
+            data_min = visible_data.min()
+            data_max = visible_data.max()
+
+            # Normalize data using local range
+            if np.isclose(data_max, data_min):
+                normalized = np.zeros_like(filtered_data)
+            else:
+                normalized = (filtered_data - data_min) / (data_max - data_min)
+            normalized = np.clip(normalized, 0, 1)  # Ensure within [0,1]
+
+            # Get visualisation parameters
+            lower = ui["density_lower"]["slider"].value() / 255.0
+            upper = ui["density_upper"]["slider"].value() / 255.0
+            max_alpha = ui["opacity_slider"]["slider"].value() / 100.0
+            gamma = ui["opacity_gamma_spinbox"].value()
+            cmap = plt.get_cmap(ui["cmap_combo"].currentText())
+
+            # Create RGBA array
+            rgba = np.zeros((*normalized.shape, 4), dtype=np.uint8)
+            colors = (cmap(normalized)[..., :3] * 255).astype(np.uint8)
+
+            # Calculate alpha channel
+                        # Calculate alpha channel
+            if gamma == 0:
+                in_range = (normalized > lower) & (normalized <= upper)
+            else:
+                in_range = (normalized >= lower) & (normalized <= upper)
+            scaled = np.clip((normalized - lower) / (upper - lower + 1e-9), 0, 1)
+            # Apply gamma correction; note that gamma=0 will now keep zeros unshaded because np.power(0, 0) remains 0 via this mask.
+            corrected = scaled ** gamma
+            alpha = (corrected * max_alpha * 255).astype(np.uint8)
+            alpha[~in_range] = 0
+
+            # Outside of the ROI make completely transparent
+            rgba[..., :3] = colors
+            rgba[..., 3] = alpha
+
+            # Create ImageData structure
+            vol = pv.ImageData()
+            vol.dimensions = np.array(filtered_data.shape) + 1
+            vol.origin = region_data['phys_bounds'][0]
+            vol.spacing = region_data['grid_params']['spacing']
+            vol.cell_data["rgba"] = rgba.reshape(-1, 4, order='F')
+
+            # Add to plotter
+            actor = self.plotter.add_volume(
+                vol,
+                scalars="rgba",
+                clim=[0, 255],
+                scalar_bar_args={"title": f"{atype} Density"},
+                blending='composite',
+                shade=False,
+                opacity='linear',
+            )
+            actor.GetProperty().SetInterpolationType(VTK_CUBIC_INTERPOLATION)
+            self.rendered_actors[atype] = actor
+
+        except Exception as e:
+            print(f"Error visualizing {atype}: {str(e)}")
+
+            
     def _visualise_averages(self, atype: str, ui: Dict[str, Any],
                           region_data: Dict[str, Any]) -> None:
         """Visualise averaged positions for given atom type.
