@@ -37,29 +37,56 @@ import pickle
 # APPLICATION CONFIGURATION
 ###############################################################
 
+# # Input/Output Configuration
+# INPUT_FILE_CONFIG = {
+#     'path': '/Users/chrisdavies/Desktop/long_traj_Li6PS5Br_87_13_1000K_5.000000ns.dat',
+#     'format': 'ase',  # 'pickle' or 'ase'
+#     'slice': ":",  # ASE index string (e.g. ':' for all frames, '::2' for every 2nd frame) or a slice object
+# }
+
+# # Atom type mapping for visualization (None to use original types)
+# # THIS IS AN EXAMPLE SETUP
+# ATOM_TYPE_MAP = {
+#     'H': 'Li',
+#     'He': 'P',
+#     'Li': 'S',
+#     'Be': 'Br'
+# }
+
 # Input/Output Configuration
 INPUT_FILE_CONFIG = {
-    'path': '/Users/chrisdavies/Desktop/long_traj_Li6PS5Br_87_13_1000K_1000k_1.000000ns.dat',
+    'path': '/Users/chrisdavies/Desktop/LSP/PAPER/4ns/trajectory_1023K_wrapped.xyz',
     'format': 'ase',  # 'pickle' or 'ase'
-    'slice': ":",  # ASE index string (e.g. ':' for all frames, '::2' for every 2nd frame) or a slice object
+    'slice': "::20",  # ASE index string (e.g. ':' for all frames, '::2' for every 2nd frame) or a slice object
 }
 
 # Atom type mapping for visualization (None to use original types)
 # THIS IS AN EXAMPLE SETUP
-ATOM_TYPE_MAP = {
-    'H': 'Li',
-    'He': 'P',
-    'Li': 'S',
-    'Be': 'Br'
+ATOM_TYPE_MAP = None
+# ATOM_TYPE_MAP = {
+#     'H': 'Li',
+#     'He': 'P',
+#     'Li': 'Si',
+# }
+
+ROI_DEFINITION = { # None : disable pre-slicing and use the full cell
+    'type': 'fractional', # 'fractional' or 'absolute'
+    'bounds': ((0.0, 1/3), (0.0, 1/3), (0.0, 1/3)) # ((xmin, xmax), (ymin, ymax), (zmin, zmax))
+    # Example: Top-left-front octant
+    #  'type': 'fractional',
+    #  'bounds': ((0.0, 0.5), (0.0, 0.5), (0.0, 0.5))
+    # Example: Full cell (equivalent to None)
+    # 'type': 'fractional',
+    # 'bounds': ((0.0, 1.0), (0.0, 1.0), (0.0, 1.0))
 }
 
 # Where to get the average positions from
-AVERAGE_POSITIONS_FRAME_SLICE = slice(10000, 10001) # DEFAULT: slice(None)
+AVERAGE_POSITIONS_FRAME_SLICE = slice(30,45) # DEFAULT: slice(None)
 # THIS IS A MESSY WORKAROUND TO GET AROUND WRAPPING ISSUES
 
 # Application Constants and Configuration
-GRID_RESOLUTION = 200  # Fixed grid resolution for histogram binning
-GAUSSIAN_SIGMA = 1.5   # Sigma value for Gaussian smoothing
+GRID_RESOLUTION = 300  # Fixed grid resolution for histogram binning
+GAUSSIAN_SIGMA = 12   # Sigma value for Gaussian smoothing
 UPDATE_DELAY_MS = 200  # Delay for visualization updates
 ROTATION_FPS = 20      # Frames per second for rotation animation
 ROTATION_AZIMUTH = 0.5   # Azimuth angle for each rotation frame
@@ -228,7 +255,10 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         
         # VTK visualization panel
         self.plotter = QtInteractor()
+        self.plotter.renderer.SetUseDepthPeelingForVolumes(True) # Explicitly enable for volumes
+
         self.plotter.camera.parallel_projection = False
+
         main_layout.addWidget(self.plotter, stretch=MAIN_PANEL_RATIO)
         
         # Control panel scroll area
@@ -288,9 +318,26 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         """Initialize Gaussian smoothing controls."""
         smoothing_group = QtWidgets.QGroupBox("Smoothing Settings")
         smoothing_layout = QtWidgets.QVBoxLayout(smoothing_group)
+        
+        # Sigma Slider
         self.sigma_slider_obj = self.create_labelled_slider(
             "Gaussian Sigma", 0, 20, GAUSSIAN_SIGMA, smoothing_layout
         )
+
+        # Smoothing Order Radio Buttons
+        order_group = QtWidgets.QGroupBox("Apply Smoothing")
+        order_layout = QtWidgets.QHBoxLayout(order_group)
+        self.smooth_before_roi_radio = QtWidgets.QRadioButton("Before ROI Slicing")
+        self.smooth_after_roi_radio = QtWidgets.QRadioButton("After ROI Slicing")
+        self.smooth_before_roi_radio.setChecked(True) # Default
+        order_layout.addWidget(self.smooth_before_roi_radio)
+        order_layout.addWidget(self.smooth_after_roi_radio)
+        smoothing_layout.addWidget(order_group)
+
+        # Connect signals
+        self.smooth_before_roi_radio.toggled.connect(self.schedule_update)
+        # No need to connect the second, toggled signal covers both
+
         # Add the smoothing group to the main control layout:
         self.control_layout.addWidget(smoothing_group)
 
@@ -527,6 +574,12 @@ class DensityVisualiser(QtWidgets.QMainWindow):
             SPHERE_SIZE_DEFAULT,
             group_layout
         )
+
+        # --- Normalization and Gamma Controls Container ---
+        norm_gamma_widget = QtWidgets.QWidget()
+        norm_gamma_layout = QtWidgets.QHBoxLayout(norm_gamma_widget)
+        norm_gamma_layout.setContentsMargins(0,0,0,0) # Remove margins
+
         # Gamma correction control for histogram
         gamma_spinbox = self.create_labelled_double_spinbox(
             "Opacity Gamma",
@@ -534,8 +587,18 @@ class DensityVisualiser(QtWidgets.QMainWindow):
             GAMMA_RANGE[1],
             GAMMA_DEFAULT,
             0.1,
-            group_layout
+            norm_gamma_layout # Add to the horizontal layout
         )
+
+        # Normalization Checkbox
+        norm_checkbox = QtWidgets.QCheckBox("Norm. In Range")
+        norm_checkbox.setToolTip("If checked, normalize data within the slider range to [0,1] for opacity mapping. If unchecked, normalize full data range first, then apply sliders.")
+        norm_checkbox.setChecked(False) # Default: normalize before sliders
+        norm_checkbox.stateChanged.connect(self.schedule_update)
+        norm_gamma_layout.addWidget(norm_checkbox) # Add checkbox to horizontal layout
+
+        group_layout.addWidget(norm_gamma_widget) # Add the container widget to the main group layout
+
         # Color selector
         random_color = "#%06x" % random.randint(0, 0xFFFFFF)
         color_button = QtWidgets.QPushButton("Select Color")
@@ -554,6 +617,8 @@ class DensityVisualiser(QtWidgets.QMainWindow):
             "opacity_slider": opacity_slider,
             "sphere_slider": sphere_slider,
             "opacity_gamma_spinbox": gamma_spinbox,
+            "normalize_range_checkbox": norm_checkbox, # Store the checkbox
+            "norm_gamma_widget": norm_gamma_widget, # Store the container
             "color_button": color_button,
             "cmap_combo": cmap_combo,
             "cmap_label": cmap_label,
@@ -1327,108 +1392,183 @@ class DensityVisualiser(QtWidgets.QMainWindow):
         return params
 
     def _visualise_histogram(self, atype: str, ui: Dict[str, Any], region_data: Dict[str, Any]) -> None:
-        """Visualise histogram data with dynamic min/max based on current ROI and Miller slice."""
+        """Visualise histogram data based on UI settings."""
         try:
             hist_data = self.atom_data[atype]['histogram_data']
             sigma = self.sigma_slider_obj["slider"].value()
             raw_data = hist_data['raw_data']
+            smooth_before = self.smooth_before_roi_radio.isChecked()
+            roi_indices = region_data['roi_indices']
+            miller_mask = region_data['miller_mask'] # Boolean mask matching ROI slice shape, or None
+            grid_params = region_data['grid_params']
 
-            # Initialise the cache dict if needed.
-            if not hasattr(self, "_smoothed_hist_cache"):
-                self._smoothed_hist_cache = {}
+            roi_slice = (
+                slice(roi_indices['xmin'], roi_indices['xmax'] + 1),
+                slice(roi_indices['ymin'], roi_indices['ymax'] + 1),
+                slice(roi_indices['zmin'], roi_indices['zmax'] + 1)
+            )
 
-            # Compute a key from the sigma and raw_data content
-            cache_key = (sigma, hash(raw_data.tobytes()))
-            if cache_key in self._smoothed_hist_cache:
-                processed_data = self._smoothed_hist_cache[cache_key]
-            else:
+            data_roi_sliced_unmasked = None # Data after ROI slicing, before masking/smoothing
+            data_smoothed_unmasked = None   # Data after smoothing, before masking
+            data_processed = None           # Final data after slicing, smoothing, and masking
+
+            if smooth_before:
+                smoothed_full_data = raw_data
                 if sigma > 0:
-                    processed_data = gaussian_filter(raw_data, sigma=sigma)
+                    if not hasattr(self, "_smoothed_hist_cache"): self._smoothed_hist_cache = {}
+                    cache_key = (sigma, hash(raw_data.tobytes()))
+                    if cache_key in self._smoothed_hist_cache:
+                        smoothed_full_data = self._smoothed_hist_cache[cache_key]
+                    else:
+                        smoothed_full_data = gaussian_filter(raw_data, sigma=sigma)
+                        self._smoothed_hist_cache[cache_key] = smoothed_full_data
+                
+                data_roi_sliced_unmasked = smoothed_full_data[roi_slice]
+                data_smoothed_unmasked = data_roi_sliced_unmasked # Already smoothed
+
+                if miller_mask is not None and miller_mask.shape == data_roi_sliced_unmasked.shape:
+                    data_processed = np.where(miller_mask, data_roi_sliced_unmasked, 0)
                 else:
-                    processed_data = raw_data
-                self._smoothed_hist_cache[cache_key] = processed_data
+                    data_processed = data_roi_sliced_unmasked
 
-            sub_data = processed_data[
-                region_data['roi_indices']['xmin']:region_data['roi_indices']['xmax']+1,
-                region_data['roi_indices']['ymin']:region_data['roi_indices']['ymax']+1,
-                region_data['roi_indices']['zmin']:region_data['roi_indices']['zmax']+1
-            ]
+            else: # Smooth After
+                data_roi_sliced_unmasked = raw_data[roi_slice] # Raw slice
+                
+                data_smoothed_unmasked = data_roi_sliced_unmasked # Start with raw slice
+                if sigma > 0:
+                    data_smoothed_unmasked = gaussian_filter(data_roi_sliced_unmasked, sigma=sigma) # Smooth the slice
+                
+                if miller_mask is not None and miller_mask.shape == data_smoothed_unmasked.shape:
+                    data_processed = np.where(miller_mask, data_smoothed_unmasked, 0)
+                else:
+                    data_processed = data_smoothed_unmasked
 
-            # Apply Miller plane masking
-            miller_mask = region_data['miller_mask']
-            filtered_data = np.where(miller_mask, sub_data, 0) if miller_mask is not None else sub_data
-
-
-            # Calculate local min/max based on current view
-            if miller_mask is not None:
-                visible_data = sub_data[miller_mask]
+            # Determine Data Range (Min/Max) from *visible* voxels of the *smoothed* (or raw if sigma=0) data
+            data_for_range_calc = data_smoothed_unmasked # Use the data after the relevant smoothing step
+            if miller_mask is not None and miller_mask.shape == data_for_range_calc.shape:
+                visible_data_values = data_for_range_calc[miller_mask]
             else:
-                visible_data = sub_data.ravel()
+                visible_data_values = data_for_range_calc.ravel()
 
-            if visible_data.size == 0:
-                return  # No data to visualize
+            if visible_data_values.size == 0:
+                return
 
-            data_min = visible_data.min()
-            data_max = visible_data.max()
+            data_min = visible_data_values.min()
+            data_max = visible_data_values.max()
+            data_range = data_max - data_min
 
-            # Normalize data using local range
-            if np.isclose(data_max, data_min):
-                normalized = np.zeros_like(filtered_data)
-            else:
-                normalized = (filtered_data - data_min) / (data_max - data_min)
-            normalized = np.clip(normalized, 0, 1)  # Ensure within [0,1]
-
-            # Get visualisation parameters
-            lower = ui["density_lower"]["slider"].value() / 255.0
-            upper = ui["density_upper"]["slider"].value() / 255.0
-            max_alpha = ui["opacity_slider"]["slider"].value() / 100.0
+            density_lower_raw = ui["density_lower"]["slider"].value() # 0-255
+            density_upper_raw = ui["density_upper"]["slider"].value() # 0-255
+            max_opacity = ui["opacity_slider"]["slider"].value() / 100.0 # Opacity [0, 1]
             gamma = ui["opacity_gamma_spinbox"].value()
-            cmap = plt.get_cmap(ui["cmap_combo"].currentText())
+            normalize_within_range = ui["normalize_range_checkbox"].isChecked()
+            cmap_name = ui["cmap_combo"].currentText()
+            cmap = plt.get_cmap(cmap_name)
 
-            # Create RGBA array
-            rgba = np.zeros((*normalized.shape, 4), dtype=np.uint8)
-            colors = (cmap(normalized)[..., :3] * 255).astype(np.uint8)
+            rgba = np.zeros((*data_processed.shape, 4), dtype=np.uint8)
+            alpha_factor = np.zeros_like(data_processed, dtype=float)
+            values_for_cmap = np.zeros_like(data_processed, dtype=float)
+            values_for_scaling = np.zeros_like(data_processed, dtype=float) # Mapped to [0, 1] for gamma
 
-            # Calculate alpha channel
-                        # Calculate alpha channel
-            if gamma == 0:
-                in_range = (normalized > lower) & (normalized <= upper)
+            if np.isclose(data_range, 0):
+                # Handle flat data
+                normalized_value = 0.0
+                values_for_cmap.fill(normalized_value)
+                in_range = False
+                if normalize_within_range:
+                    lower_data = data_min
+                    upper_data = data_min
+                    if lower_data <= data_min <= upper_data:
+                         in_range = True
+                else:
+                    lower_norm = density_lower_raw / 255.0
+                    upper_norm = density_upper_raw / 255.0
+                    if lower_norm <= normalized_value <= upper_norm:
+                         in_range = True
+                if in_range:
+                     values_for_scaling.fill(1.0)
+
+            elif normalize_within_range:
+                # Normalize Within Slider Range (Checked)
+                lower_data = data_min + (density_lower_raw / 255.0) * data_range
+                upper_data = data_min + (density_upper_raw / 255.0) * data_range
+                selected_range_width = upper_data - lower_data
+
+                in_range_mask = (data_processed >= lower_data) & (data_processed <= upper_data)
+                
+                if np.any(in_range_mask):
+                    if np.isclose(selected_range_width, 0):
+                        values_for_cmap[in_range_mask] = 1.0
+                    else:
+                        vals_in_range = data_processed[in_range_mask]
+                        normalized_vals = (vals_in_range - lower_data) / selected_range_width
+                        values_for_cmap[in_range_mask] = np.clip(normalized_vals, 0, 1)
+                values_for_scaling = values_for_cmap # Use same 0-1 range
+
             else:
-                in_range = (normalized >= lower) & (normalized <= upper)
-            scaled = np.clip((normalized - lower) / (upper - lower + 1e-9), 0, 1)
-            # Apply gamma correction; note that gamma=0 will now keep zeros unshaded because np.power(0, 0) remains 0 via this mask.
-            corrected = scaled ** gamma
-            alpha = (corrected * max_alpha * 255).astype(np.uint8)
-            alpha[~in_range] = 0
+                # Normalize Full Visible Range First (Unchecked - Default)
+                normalized_full_range = np.zeros_like(data_processed, dtype=float)
+                if not np.isclose(data_range, 0):
+                    normalized_full_range = (data_processed - data_min) / data_range
+                normalized_full_range = np.clip(normalized_full_range, 0, 1)
+                values_for_cmap = normalized_full_range
 
-            # Outside of the ROI make completely transparent
+                lower_norm = density_lower_raw / 255.0
+                upper_norm = density_upper_raw / 255.0
+                selected_norm_width = upper_norm - lower_norm
+
+                in_range_mask = (normalized_full_range >= lower_norm) & (normalized_full_range <= upper_norm)
+
+                if np.any(in_range_mask):
+                    if np.isclose(selected_norm_width, 0):
+                        values_for_scaling[in_range_mask] = 1.0
+                    else:
+                        vals_in_norm_range = normalized_full_range[in_range_mask]
+                        scaled_vals = (vals_in_norm_range - lower_norm) / selected_norm_width
+                        values_for_scaling[in_range_mask] = np.clip(scaled_vals, 0, 1)
+
+            # Apply Colormap
+            colors = (cmap(values_for_cmap)[..., :3] * 255).astype(np.uint8)
             rgba[..., :3] = colors
-            rgba[..., 3] = alpha
 
-            # Create ImageData structure
+            # Apply Gamma and Opacity
+            valid_scaling_mask = values_for_scaling > 0
+            if gamma == 0:
+                 alpha_factor[valid_scaling_mask] = 1.0 # Use mask to only affect in-range values
+            elif np.any(valid_scaling_mask):
+                 alpha_factor[valid_scaling_mask] = np.power(values_for_scaling[valid_scaling_mask], gamma)
+
+            alpha_uint8 = np.clip(alpha_factor * max_opacity * 255, 0, 255).astype(np.uint8)
+            rgba[..., 3] = alpha_uint8
+
+            # Add Volume Actor
             vol = pv.ImageData()
-            vol.dimensions = np.array(filtered_data.shape) + 1
-            vol.origin = region_data['phys_bounds'][0]
-            vol.spacing = region_data['grid_params']['spacing']
-            vol.cell_data["rgba"] = rgba.reshape(-1, 4, order='F')
+            vol.dimensions = np.array(data_processed.shape)
+            roi_origin = grid_params['origin'] + np.array([
+                roi_indices['xmin'], roi_indices['ymin'], roi_indices['zmin']
+            ]) * grid_params['spacing']
+            vol.origin = roi_origin
+            vol.spacing = grid_params['spacing']
+            vol.point_data["rgba"] = rgba.reshape(-1, 4, order='F')
 
-            # Add to plotter
             actor = self.plotter.add_volume(
                 vol,
                 scalars="rgba",
-                clim=[0, 255],
-                scalar_bar_args={"title": f"{atype} Density"},
+                mapper='smart',
                 blending='composite',
                 shade=False,
-                opacity='linear',
+                scalar_bar_args={'title': f"{atype} Density"}
             )
             actor.GetProperty().SetInterpolationType(VTK_CUBIC_INTERPOLATION)
             self.rendered_actors[atype] = actor
 
         except Exception as e:
-            print(f"Error visualizing {atype}: {str(e)}")
+            import traceback
+            smooth_before_str = str(smooth_before) if 'smooth_before' in locals() else 'unknown'
+            sigma_str = str(sigma) if 'sigma' in locals() else 'unknown'
+            print(f"Error visualizing {atype} (Sigma: {sigma_str}, Smooth Before: {smooth_before_str}): {str(e)}")
+            print(traceback.format_exc())
 
-            
     def _visualise_averages(self, atype: str, ui: Dict[str, Any],
                           region_data: Dict[str, Any]) -> None:
         """Visualise averaged positions for given atom type.
