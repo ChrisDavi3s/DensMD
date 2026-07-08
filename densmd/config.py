@@ -1,8 +1,7 @@
-"""Application settings.
+"""Application settings:
 
-All previously hard-coded constants live here as a single dataclass so they can
-be edited in the Settings dialog and persisted to ``~/.densmd.json`` instead of
-being changed in source.
+Grid resolution, render quality, default ranges, timing. Can be edited live from the
+Settings dialog and round-tripped to ``~/.densmd.json`` between runs.
 """
 from __future__ import annotations
 

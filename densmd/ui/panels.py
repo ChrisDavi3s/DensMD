@@ -17,7 +17,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ..config import Settings
 from ..render import Appearance
-from .widgets import labelled_slider, labelled_spinbox
+from .widgets import ComboBox, labelled_slider, labelled_spinbox
 
 MODES = ["Hidden", "Histogram", "Averaged Positions", "Miller Plane Slice"]
 
@@ -60,7 +60,7 @@ class AtomPanel(QtWidgets.QFrame):
         header.addWidget(self.color_btn)
         header.addStretch()
 
-        self.mode = QtWidgets.QComboBox()
+        self.mode = ComboBox()
         self.mode.addItems(MODES)
         self.mode.currentIndexChanged.connect(self._sync_visibility)
         self.mode.currentIndexChanged.connect(geo)
@@ -78,7 +78,7 @@ class AtomPanel(QtWidgets.QFrame):
         ch = QtWidgets.QHBoxLayout(crow)
         ch.setContentsMargins(0, 0, 0, 0)
         ch.addWidget(QtWidgets.QLabel("Colormap:"))
-        self.cmap = QtWidgets.QComboBox()
+        self.cmap = ComboBox()
         self.cmap.addItems(settings.colormaps)
         self.cmap.setCurrentText(settings.colormaps[0])
         self.cmap.currentIndexChanged.connect(app)

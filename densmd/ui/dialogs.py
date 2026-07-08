@@ -1,4 +1,11 @@
-"""Open-file and Settings dialogs (replace hard-coded module config)."""
+"""Open-file and Settings dialogs.
+
+``OpenDialog`` collects a ``LoadSpec``: browse to a file, pick/auto-detect its
+format and frame slice, then "Scan species" reads just the first frame so the
+user can remap element symbols before the real (slow) load happens.
+``SettingsDialog`` edits a live ``Settings`` instance in place and saves it to
+disk on accept.
+"""
 from __future__ import annotations
 
 from typing import Dict, Optional
@@ -8,6 +15,7 @@ from PyQt5 import QtCore, QtWidgets
 from ..config import Settings
 from ..io import LoadSpec, guess_format
 from ..model import DensityModel
+from .widgets import ComboBox, SpinBox
 
 
 def _parse_type_map(text: str) -> Optional[Dict[str, str]]:
@@ -47,7 +55,7 @@ class OpenDialog(QtWidgets.QDialog):
         path_row.addWidget(browse)
         form.addRow("File:", path_row)
 
-        self.fmt = QtWidgets.QComboBox()
+        self.fmt = ComboBox()
         self.fmt.addItems(["Auto", "ASE", "Pickle"])
         form.addRow("Format:", self.fmt)
 
@@ -143,22 +151,22 @@ class SettingsDialog(QtWidgets.QDialog):
         self.setWindowTitle("Settings")
         form = QtWidgets.QFormLayout(self)
 
-        self.delay = QtWidgets.QSpinBox()
+        self.delay = SpinBox()
         self.delay.setRange(0, 1000)
         self.delay.setValue(settings.update_delay_ms)
         form.addRow("Update delay (ms):", self.delay)
 
-        self.fps = QtWidgets.QSpinBox()
+        self.fps = SpinBox()
         self.fps.setRange(1, 60)
         self.fps.setValue(settings.rotation_fps)
         form.addRow("Rotation FPS:", self.fps)
 
-        self.plane_res = QtWidgets.QSpinBox()
+        self.plane_res = SpinBox()
         self.plane_res.setRange(1, 16)
         self.plane_res.setValue(settings.miller_plane_res_factor)
         form.addRow("Miller plane res factor:", self.plane_res)
 
-        self.plane_order = QtWidgets.QSpinBox()
+        self.plane_order = SpinBox()
         self.plane_order.setRange(0, 5)
         self.plane_order.setValue(settings.miller_sample_order)
         form.addRow("Miller sample spline order:", self.plane_order)
@@ -167,7 +175,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.unwrap.setChecked(settings.unwrap_averages)
         form.addRow("Averaged positions:", self.unwrap)
 
-        self.subsample = QtWidgets.QSpinBox()
+        self.subsample = SpinBox()
         self.subsample.setRange(1, 1000)
         self.subsample.setValue(settings.average_subsample)
         self.subsample.setToolTip("Use every Nth frame when averaging (speed).")

@@ -3,7 +3,7 @@
 Heavy GUI/graphics deps (scipy, vtk, pyvista, matplotlib, PyQt5) are stubbed so
 the pure numerical logic can be exercised without a display or those installs.
 
-Run with:  python -m unittest test_core -v
+Run with (from the repo root):  python -m unittest discover -s tests -v
 """
 import sys
 import types

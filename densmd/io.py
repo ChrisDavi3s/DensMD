@@ -1,7 +1,9 @@
 """Trajectory loading and input specification.
 
-Replaces the old module-level ``INPUT_FILE_CONFIG`` with a small value object
-that the Open dialog fills in, so the app runs without editing source.
+``LoadSpec`` is the value object the Open dialog fills in: file path,
+reader format, frame slice, optional atom-type remap. Everything downstream
+(species scanning, model loading) reads frames through it, so pointing the
+app at a new trajectory never means editing source.
 """
 from __future__ import annotations
 

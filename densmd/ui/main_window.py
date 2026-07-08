@@ -1,8 +1,19 @@
 """Main application window: wires controls to model + render view.
 
-Signal routing is the whole point:
-  * geometry controls  -> debounced ``_schedule_geometry`` -> ``_rebuild``
-  * appearance controls -> ``_retint`` (instant, no recompute, no camera move)
+Layout is a VTK plotter on the left and a scrollable control panel on the
+right (toolbar for camera/view, per-atom ``AtomPanel``s, then global
+ROI/Miller/render controls). Every control funnels into one of two signal
+paths -- this routing is the whole point of the file:
+
+  * geometry controls   -> debounced ``_schedule_geometry`` -> ``_rebuild``,
+                          which re-reads the model and rebuilds actors.
+  * appearance controls -> ``_retint``, which only re-runs the cheap
+                          colour/opacity remap on the existing actor -- no
+                          model recompute, no camera move.
+
+``_load`` (File > Open) tears down the old per-atom panels, builds fresh ones
+from the scanned species list, and resets the ROI sliders to the new grid
+before the first ``_rebuild``.
 """
 from __future__ import annotations
 
@@ -20,7 +31,8 @@ from ..model import DensityModel
 from ..render import RenderView
 from .dialogs import OpenDialog, SettingsDialog
 from .panels import AtomPanel
-from .widgets import CollapsibleBox, labelled_slider, labelled_spinbox
+from .widgets import (ComboBox, CollapsibleBox, DoubleSpinBox, SpinBox,
+                      labelled_slider, labelled_spinbox)
 
 _ROI_LABELS = {
     "xmin": "X min", "xmax": "X max", "ymin": "Y min",
@@ -115,7 +127,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spin_act.setToolTip("Auto-rotate the camera")
         self.spin_act.toggled.connect(self._toggle_rotation)
         tb.addAction(self.spin_act)
-        self.rot_speed = QtWidgets.QDoubleSpinBox()
+        self.rot_speed = DoubleSpinBox()
         self.rot_speed.setRange(0.1, 10.0)
         self.rot_speed.setSingleStep(0.1)
         self.rot_speed.setValue(self.settings.rotation_azimuth)
@@ -186,7 +198,7 @@ class MainWindow(QtWidgets.QMainWindow):
         h.setContentsMargins(0, 0, 0, 0)
         h.addWidget(QtWidgets.QLabel("Histogram grid (bins/axis):"))
         h.addStretch()
-        self.grid_spin = QtWidgets.QSpinBox()
+        self.grid_spin = SpinBox()
         self.grid_spin.setRange(32, 512)
         self.grid_spin.setSingleStep(10)
         self.grid_spin.setValue(self.settings.grid_resolution)
@@ -253,7 +265,7 @@ class MainWindow(QtWidgets.QMainWindow):
         sh.setContentsMargins(0, 0, 0, 0)
         sh.addWidget(QtWidgets.QLabel("Ray step (smaller = sharper):"))
         sh.addStretch()
-        self.sample_spin = QtWidgets.QDoubleSpinBox()
+        self.sample_spin = DoubleSpinBox()
         self.sample_spin.setRange(0.1, 2.0)
         self.sample_spin.setSingleStep(0.1)
         self.sample_spin.setValue(self.settings.volume_sample_factor)
@@ -306,7 +318,7 @@ class MainWindow(QtWidgets.QMainWindow):
         sth = QtWidgets.QHBoxLayout(strow)
         sth.setContentsMargins(0, 0, 0, 0)
         self.stereo_on = QtWidgets.QCheckBox("Stereo 3D")
-        self.stereo_mode = QtWidgets.QComboBox()
+        self.stereo_mode = ComboBox()
         self.stereo_mode.addItems(STEREO_MODES)
         self.stereo_on.toggled.connect(self._apply_stereo)
         self.stereo_mode.currentIndexChanged.connect(self._apply_stereo)

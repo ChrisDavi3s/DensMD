@@ -1,15 +1,27 @@
-"""Rendering layer (PyVista / VTK).
+"""Rendering layer: turns model output into on-screen PyVista/VTK actors.
 
-Two-tier updates keep the UI responsive:
+Pipeline, per atom species, per update:
 
-  set_* / show_*        -> geometry changes: (re)build actors
-  update_appearance     -> appearance changes: recompute only the cheap RGBA /
-                           LUT over cached arrays; no histogram/smoothing work
-                           and no camera move.
+  1. ``model.py`` hands over geometry-dependent data: a ``VolumeData`` (ROI
+     density + quantile array) for Histogram mode, sampled scalars on a plane
+     mesh for Miller Plane Slice, or raw points for Averaged Positions.
+  2. This module turns that data plus an ``Appearance`` snapshot (cmap,
+     density window, opacity, gamma, colour) into something VTK can draw:
+     an RGBA volume texture (``histogram_rgba``), a scalar lookup table
+     (``build_lut``), or coloured sphere glyphs.
+  3. ``RenderView`` builds/replaces the actor and hands it to the plotter.
 
-Histogram volumes use per-voxel RGBA (the original app's exact colour/opacity
-maths) rather than VTK transfer functions -- this reproduces the trusted look
-and avoids VTK's transfer-texture size limits.
+Two-tier updates keep dragging a slider cheap:
+
+  set_* / show_*      -> geometry changed: rebuild the actor from scratch.
+  update_appearance   -> only colour/opacity changed: re-run step 2 over the
+                         cached arrays from step 1 and retint the existing
+                         actor -- no histogram/smoothing/model work, no
+                         camera move.
+
+Histogram volumes are painted as per-voxel RGBA with no VTK transfer function,
+which avoids VTK's transfer-texture size limits and the colour mis-mapping
+they cause at high grid resolution.
 """
 from __future__ import annotations
 

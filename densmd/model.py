@@ -1,12 +1,14 @@
-"""Data model and compute core.
+"""Data model and compute core: trajectory in, scalar fields out.
 
-Holds the loaded trajectory-derived data (per-species histograms and averaged
-positions) and turns the current geometry controls (ROI, Miller, smoothing)
-into scalar fields ready for rendering.
+``load()`` reads a trajectory once and bins each species into a per-atom
+histogram plus an averaged-position array. From there, every UI geometry
+change (ROI bounds, Miller plane, smoothing sigma) runs through ``region()``,
+``smoothed()`` and ``volume_data()`` / ``sample_on_plane()`` to produce the
+scalar fields ``render.py`` draws.
 
-Design goal: *geometry* is the only thing that triggers work here. Appearance
-(colour, opacity, gamma, colormap) never touches this module -- it is handled
-downstream by transfer functions, so dragging an opacity slider costs nothing.
+Only *geometry* triggers work here. Appearance (colour, opacity, gamma,
+colormap) never touches this module : render.py recomputes that downstream,
+so dragging an opacity slider costs nothing on this side.
 
 Caches, cheaply keyed:
   * smoothed histograms          -> key (atype, sigma)   [raw data is static]
