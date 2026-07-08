@@ -481,7 +481,7 @@ class RenderView:
             self._entries[atype] = {"kind": "glyph", "actor": None}
             return
         radius = app.sphere_size * 0.1
-        glyphs = pv.PolyData(points).glyph(geom=pv.Sphere(radius=radius))
+        glyphs = pv.PolyData(points).glyph(geom=pv.Sphere(radius=radius), scale=False, orient=False)
         actor = self.plotter.add_mesh(glyphs, color=app.color, name=f"{atype}_avg")
         self._entries[atype] = {"kind": "glyph", "actor": actor, "points": points}
         self._had_actors = True

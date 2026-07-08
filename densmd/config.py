@@ -67,8 +67,8 @@ class Settings:
     sphere_size_range: tuple = (1, 50)
     sphere_size_default: int = 5
     density_range: tuple = (0, 255)
-    density_lower_default: int = 77
-    density_upper_default: int = 178
+    density_lower_default: int = 120
+    density_upper_default: int = 255
     opacity_default: int = 100
     gamma_range: tuple = (0.0, 2.0)
     gamma_default: float = 0.0
