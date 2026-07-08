@@ -54,7 +54,7 @@ class Appearance:
     # Isosurface mode
     iso_shells: int = 4         # number of nested contour shells
     iso_tolerance: float = 0.05  # fraction of the window trimmed off each end
-    iso_smooth: int = 20        # Taubin mesh-smoothing iterations
+    iso_quality: int = 100      # 1-100% surface quality
 
 
 # ---------------------------------------------------------------------------
@@ -121,8 +121,10 @@ def iso_shell_style(vol, levels: np.ndarray, app: Appearance):
     lo, hi = float(app.density_lower), float(app.density_upper)
     width = max(hi - lo, 1e-9)
     data = vol.data
-    valid = data[vol.mask] if vol.mask is not None else data
-    valid = valid[np.isfinite(valid)]
+    if vol.mask is not None:
+        valid = data[vol.mask]
+    else:
+        valid = data
     if valid.size == 0:
         valid = np.array([0.0])
     if app.normalize_in_range:
@@ -180,10 +182,9 @@ def histogram_rgba(vol, app: Appearance) -> np.ndarray:
         valid = data[mask]
     else:
         valid = data
-    valid = valid[np.isfinite(valid)]
-    
     if valid.size == 0:
         valid = np.array([0.0])
+    
     dmin, dmax = float(valid.min()), float(valid.max())
     drange = dmax - dmin
     if not app.normalize_in_range:
@@ -193,25 +194,32 @@ def histogram_rgba(vol, app: Appearance) -> np.ndarray:
         hi_d = max(np.quantile(valid, upper / 255.0), lo_d)
         sel = hi_d - lo_d
         cin = ((data - lo_d) / sel if sel > 1e-9
-               else np.where(np.isclose(data, lo_d), 1.0, 0.0))
+               else np.where(np.isclose(data, lo_d), np.float32(1.0), np.float32(0.0)))
+               
     # 256-entry uint8 LUT + take: ~10x cheaper than calling the cmap per voxel
+    np.clip(cin, 0.0, 1.0, out=cin)
+    cin *= 255.0
+    idx = cin.astype(np.uint8)
+    
     table = (cmap(np.linspace(0.0, 1.0, 256))[:, :3] * 255).astype(np.uint8)
-    idx = np.clip(cin * 255.0, 0, 255).astype(np.uint8)
     rgb = table[idx]
 
     # gamma + max opacity
-    opacity = np.clip(opacity, 0.0, 1.0)
+    np.clip(opacity, 0.0, 1.0, out=opacity)
     if gamma == 0:
-        alpha = np.where(opacity > 1e-6, 1.0, 0.0)
+        alpha = np.where(opacity > 1e-6, np.float32(max_opacity * 255.0), np.float32(0.0))
     else:
         alpha = opacity ** gamma
-    alpha = np.clip(alpha * max_opacity * 255, 0, 255).astype(np.uint8)
+        alpha *= (max_opacity * 255.0)
+        
+    np.clip(alpha, 0.0, 255.0, out=alpha)
+    alpha8 = alpha.astype(np.uint8)
     if mask is not None:
-        alpha[~mask] = 0
+        alpha8[~mask] = 0
 
     rgba = np.empty((*data.shape, 4), dtype=np.uint8, order="F")
     rgba[..., :3] = rgb
-    rgba[..., 3] = alpha
+    rgba[..., 3] = alpha8
     return rgba
 
 
@@ -409,15 +417,22 @@ class RenderView:
             # close surfaces at the Miller-slab boundary
             quant = np.where(vol_data.mask, quant, -1.0).astype(np.float32)
             
-        if app.iso_smooth > 0:
-            from scipy.ndimage import gaussian_filter
-            sigma = max(0.1, app.iso_smooth / 20.0)
-            quant = gaussian_filter(quant, sigma=sigma)
+        # Volumetric smoothing ensures the mesh isn't completely blocky
+        from scipy.ndimage import gaussian_filter
+        quant = gaussian_filter(quant, sigma=0.5)
+
+        spacing = vol_data.spacing
+        if app.iso_quality < 100:
+            from scipy.ndimage import zoom
+            factor = max(0.1, app.iso_quality / 100.0)
+            quant = zoom(quant, factor, order=1)
+            scale_factors = np.array(vol_data.data.shape) / np.array(quant.shape)
+            spacing = vol_data.spacing * scale_factors
             
         image = pv.ImageData()
         image.dimensions = np.array(quant.shape)
         image.origin = vol_data.origin
-        image.spacing = vol_data.spacing
+        image.spacing = spacing
         image.point_data["q"] = quant.ravel(order="F")
         # flying edges: multi-threaded marching cubes for image data
         mesh = image.contour(isosurfaces=list(levels), scalars="q",
@@ -427,6 +442,7 @@ class RenderView:
                                     "vol": vol_data, "app": app,
                                     "levels": levels}
             return
+                
         # Cheap smooth shading: flying edges already emits consistently wound
         # triangles, so skip the (slow) consistency/splitting passes pyvista's
         # smooth_shading would run and just compute plain point normals.
@@ -492,7 +508,7 @@ class RenderView:
             levels = iso_levels(app.density_lower, app.density_upper,
                                 app.iso_shells, app.iso_tolerance)
             same_mesh = (np.array_equal(levels, entry.get("levels"))
-                         and app.iso_smooth == entry["app"].iso_smooth)
+                         and app.iso_quality == entry["app"].iso_quality)
             if not same_mesh:
                 self.show_isosurface(atype, entry["vol"], app)
                 return True

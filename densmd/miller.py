@@ -35,27 +35,28 @@ class MillerParams:
         return (self.use, self.h, self.k, self.l, self.thickness, self.offset)
 
 
-def voxel_centers(roi: Dict[str, int], origin: np.ndarray,
-                  spacing: np.ndarray) -> np.ndarray:
-    """Physical coordinates of ROI voxel centres, shape (nx, ny, nz, 3)."""
+def voxel_axes(roi: Dict[str, int], origin: np.ndarray,
+               spacing: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Physical coordinates of ROI voxel centres per axis."""
     roi_origin = origin + np.array([roi["xmin"], roi["ymin"], roi["zmin"]]) * spacing
-    dims = np.array([
+    dims = [
         roi["xmax"] - roi["xmin"] + 1,
         roi["ymax"] - roi["ymin"] + 1,
         roi["zmax"] - roi["zmin"] + 1,
-    ])
-    axes = [roi_origin[i] + (np.arange(dims[i]) + 0.5) * spacing[i] for i in range(3)]
-    grid = np.meshgrid(*axes, indexing="ij")
-    return np.stack(grid, axis=-1)
+    ]
+    return tuple(roi_origin[i] + (np.arange(dims[i]) + 0.5) * spacing[i] for i in range(3))
 
 
-def voxel_mask(centers: np.ndarray, cell_center: np.ndarray,
+def voxel_mask(axes: Tuple[np.ndarray, np.ndarray, np.ndarray], cell_center: np.ndarray,
                params: MillerParams) -> Optional[np.ndarray]:
     """Boolean mask of voxels within the slab, or None when Miller is off."""
     n = params.normal
     if n is None:
         return None
-    dist = np.abs(np.sum((centers - cell_center) * n, axis=-1) - params.offset)
+    dx = (axes[0] - cell_center[0]) * n[0]
+    dy = (axes[1] - cell_center[1]) * n[1]
+    dz = (axes[2] - cell_center[2]) * n[2]
+    dist = np.abs(dx[:, None, None] + dy[None, :, None] + dz[None, None, :] - params.offset)
     return dist < (params.thickness / 2.0)
 
 

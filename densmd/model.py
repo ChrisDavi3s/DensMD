@@ -25,7 +25,7 @@ from scipy.ndimage import gaussian_filter, map_coordinates
 
 from .config import Settings
 from .io import LoadSpec
-from .miller import MillerParams, voxel_centers, voxel_mask
+from .miller import MillerParams, voxel_axes, voxel_mask
 from .unwrap import representative_positions
 
 
@@ -227,11 +227,16 @@ class DensityModel:
         mask = None
         focal = 0.5 * (phys_min + phys_max)
         if miller.normal is not None:
-            centers = voxel_centers(roi_indices, self.origin, self.spacing)
-            mask = voxel_mask(centers, self.cell_center, miller)
-            sub_c, sub_m = centers[::5, ::5, ::5], mask[::5, ::5, ::5]
-            if np.any(sub_m):
-                focal = sub_c[sub_m].mean(axis=0)
+            axes = voxel_axes(roi_indices, self.origin, self.spacing)
+            mask = voxel_mask(axes, self.cell_center, miller)
+            sm = mask[::5, ::5, ::5]
+            if np.any(sm):
+                ix, iy, iz = np.where(sm)
+                focal = np.array([
+                    axes[0][::5][ix].mean(),
+                    axes[1][::5][iy].mean(),
+                    axes[2][::5][iz].mean()
+                ])
 
         region = Region(roi_indices, phys_min, phys_max, miller, mask, focal)
         self._region_cache = (key, region)

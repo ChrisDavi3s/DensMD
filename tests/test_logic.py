@@ -100,9 +100,10 @@ class TestMiller(unittest.TestCase):
     def test_voxel_centers_and_mask(self):
         mp = miller.MillerParams(True, 1, 0, 0, 2.0, 0.0)
         roi = dict(xmin=0, xmax=4, ymin=0, ymax=4, zmin=0, zmax=4)
-        vc = miller.voxel_centers(roi, np.zeros(3), np.ones(3))
-        self.assertEqual(vc.shape, (5, 5, 5, 3))
-        mask = miller.voxel_mask(vc, np.array([2.0, 2, 2]), mp)
+        axes = miller.voxel_axes(roi, np.zeros(3), np.ones(3))
+        self.assertEqual(len(axes), 3)
+        self.assertEqual(axes[0].shape, (5,))
+        mask = miller.voxel_mask(axes, np.array([2.0, 2, 2]), mp)
         self.assertEqual(mask.shape, (5, 5, 5))
         self.assertTrue(mask.any())
 

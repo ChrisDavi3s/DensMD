@@ -76,7 +76,7 @@ class Settings:
     # --- Isosurface mode -------------------------------------------------
     iso_shells_default: int = 4       # nested contour shells
     iso_tolerance_default: float = 0.05  # window fraction trimmed off each end
-    iso_smooth_default: int = 20      # Taubin mesh-smoothing iterations
+    iso_quality_default: int = 50    # 1-100% surface quality
 
     # --- Miller ranges --------------------------------------------------
     miller_index_range: tuple = (-10, 10)

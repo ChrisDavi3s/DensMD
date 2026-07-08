@@ -139,11 +139,11 @@ class AtomPanel(QtWidgets.QFrame):
         self.iso_tol.widget.setToolTip(
             "Fraction of the density window trimmed off each end, so the "
             "outer/inner shells sit clear of the fuzzy extremes.")
-        self.iso_smooth = labelled_spinbox("Surface Smoothing", 0, 100,
-                                           settings.iso_smooth_default, lay, app)
-        self.iso_smooth.widget.setToolTip(
-            "Taubin mesh-smoothing iterations. Rounds off voxel steps "
-            "without shrinking the shells. 0 = raw marching cubes.")
+        self.iso_quality = labelled_slider("Surface Quality (%)", 1, 100,
+                                           settings.iso_quality_default, lay, app)
+        self.iso_quality.widget.setToolTip(
+            "Mesh resolution quality. 100% is raw marching cubes. Lower values "
+            "decimate the mesh to improve rendering performance.")
 
         # Separate from opacity: only affects how colour is spread across the
         # density range. Its own line, on by default.
@@ -178,7 +178,7 @@ class AtomPanel(QtWidgets.QFrame):
             sphere_size=self.sphere.widget.value(),
             iso_shells=self.iso_shells.widget.value(),
             iso_tolerance=self.iso_tol.widget.value(),
-            iso_smooth=self.iso_smooth.widget.value(),
+            iso_quality=self.iso_quality.widget.value(),
         )
 
     # -- internal --------------------------------------------------------
@@ -214,7 +214,7 @@ class AtomPanel(QtWidgets.QFrame):
         for c in (self.density_lower, self.density_upper, self.opacity, self.gamma):
             c.container.setVisible(density)
         self.norm.setVisible(density)
-        for c in (self.iso_shells, self.iso_tol, self.iso_smooth):
+        for c in (self.iso_shells, self.iso_tol, self.iso_quality):
             c.container.setVisible(iso)
         self.sphere.container.setVisible(average)
         self.avg_method_row.setVisible(average)
