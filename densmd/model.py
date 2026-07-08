@@ -22,11 +22,17 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from scipy.ndimage import gaussian_filter, map_coordinates
+from ase.data import atomic_numbers
 
 from .config import Settings
 from .io import LoadSpec
 from .miller import MillerParams, voxel_axes, voxel_mask
 from .unwrap import representative_positions
+
+
+def sort_species_by_atomic_number(symbols: List[str]) -> List[str]:
+    """Sort a list of element symbols by atomic number, then alphabetically."""
+    return sorted(set(symbols), key=lambda s: (atomic_numbers.get(s, 999), s))
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +111,7 @@ class DensityModel:
     def scan_species(spec: LoadSpec) -> List[str]:
         """Read only the first frame and return its (mapped) unique species."""
         first = spec.load_first_frame()
-        return sorted(set(spec.mapped_symbols(first)))
+        return sort_species_by_atomic_number(spec.mapped_symbols(first))
 
     # -- loading ---------------------------------------------------------
     def load(self, spec: LoadSpec) -> None:
@@ -115,7 +121,7 @@ class DensityModel:
             raise ValueError("No frames loaded. Check file path and slice.")
 
         symbols = spec.mapped_symbols(frames[0])
-        self.species = sorted(set(symbols))
+        self.species = sort_species_by_atomic_number(symbols)
         idx_map = {s: np.array([i for i, sym in enumerate(symbols) if sym == s])
                    for s in self.species}
 
