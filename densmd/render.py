@@ -166,7 +166,7 @@ def histogram_rgba(vol, app: Appearance) -> np.ndarray:
     cmap = plt.get_cmap(app.cmap)
 
     # opacity from the quantile window
-    opacity = np.zeros_like(quant, dtype=float)
+    opacity = np.zeros_like(quant, dtype=np.float32)
     width = upper - lower
     inwin = (quant >= lower) & (quant <= upper)
     if width > 1e-9:
@@ -176,11 +176,12 @@ def histogram_rgba(vol, app: Appearance) -> np.ndarray:
     opacity[quant > upper] = 1.0
 
     # colour from the true-density range (respecting the Miller mask)
-    ranging = data.astype(float)
     if mask is not None:
-        ranging = ranging.copy()
-        ranging[~mask] = np.nan
-    valid = ranging[np.isfinite(ranging)]
+        valid = data[mask]
+    else:
+        valid = data
+    valid = valid[np.isfinite(valid)]
+    
     if valid.size == 0:
         valid = np.array([0.0])
     dmin, dmax = float(valid.min()), float(valid.max())
@@ -193,8 +194,10 @@ def histogram_rgba(vol, app: Appearance) -> np.ndarray:
         sel = hi_d - lo_d
         cin = ((data - lo_d) / sel if sel > 1e-9
                else np.where(np.isclose(data, lo_d), 1.0, 0.0))
-    cin = np.clip(cin, 0.0, 1.0)
-    rgb = (cmap(cin)[..., :3] * 255).astype(np.uint8)
+    # 256-entry uint8 LUT + take: ~10x cheaper than calling the cmap per voxel
+    table = (cmap(np.linspace(0.0, 1.0, 256))[:, :3] * 255).astype(np.uint8)
+    idx = np.clip(cin * 255.0, 0, 255).astype(np.uint8)
+    rgb = table[idx]
 
     # gamma + max opacity
     opacity = np.clip(opacity, 0.0, 1.0)
@@ -206,7 +209,7 @@ def histogram_rgba(vol, app: Appearance) -> np.ndarray:
     if mask is not None:
         alpha[~mask] = 0
 
-    rgba = np.empty((*data.shape, 4), dtype=np.uint8)
+    rgba = np.empty((*data.shape, 4), dtype=np.uint8, order="F")
     rgba[..., :3] = rgb
     rgba[..., 3] = alpha
     return rgba
@@ -405,6 +408,12 @@ class RenderView:
         if vol_data.mask is not None:
             # close surfaces at the Miller-slab boundary
             quant = np.where(vol_data.mask, quant, -1.0).astype(np.float32)
+            
+        if app.iso_smooth > 0:
+            from scipy.ndimage import gaussian_filter
+            sigma = max(0.1, app.iso_smooth / 20.0)
+            quant = gaussian_filter(quant, sigma=sigma)
+            
         image = pv.ImageData()
         image.dimensions = np.array(quant.shape)
         image.origin = vol_data.origin
@@ -418,8 +427,6 @@ class RenderView:
                                     "vol": vol_data, "app": app,
                                     "levels": levels}
             return
-        if app.iso_smooth > 0:
-            mesh = mesh.smooth_taubin(n_iter=int(app.iso_smooth), pass_band=0.1)
         # Cheap smooth shading: flying edges already emits consistently wound
         # triangles, so skip the (slow) consistency/splitting passes pyvista's
         # smooth_shading would run and just compute plain point normals.
@@ -471,9 +478,13 @@ class RenderView:
             return False
         kind = entry["kind"]
         if kind == "volume":
-            # Rebuild the volume actor from the cached arrays (no model recompute).
-            self.show_volume(atype, entry["vol"], app)
-            return True
+            # Write new RGBA into the existing texture in place: no actor
+            # rebuild, VTK just re-uploads the scalars.
+            rgba = histogram_rgba(entry["vol"], app)
+            scalars = entry["image"].point_data["rgba"]
+            scalars[:] = rgba.reshape(-1, 4, order="F")
+            entry["image"].point_data.VTKObject.Modified()
+            entry["app"] = app
         elif kind == "iso":
             # Same shell geometry (levels + smoothing unchanged) -> swap the
             # LUT only: opacity/gamma/cmap/norm drags cost nothing. Only a

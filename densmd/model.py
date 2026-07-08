@@ -70,15 +70,14 @@ def quantile_transform(data: np.ndarray, multiplier: float = 255.0) -> np.ndarra
     minimum maps to 0 and stays invisible. The reference is subsampled so the
     sort stays cheap even at high grid resolution.
     """
-    flat = data.ravel().astype(np.float64)
-    finite = flat[np.isfinite(flat)]
-    if finite.size == 0:
+    flat = np.ascontiguousarray(data.ravel(), dtype=np.float32)
+    if flat.size == 0:
         return np.zeros_like(data, dtype=np.float32)
-    step = max(1, finite.size // 1_000_000)
-    order = np.sort(finite[::step])
+    step = max(1, flat.size // 100_000)
+    order = np.sort(flat[::step])
     ranks = np.searchsorted(order, flat, side="left")
-    out = ranks / max(order.size - 1, 1) * multiplier
-    return out.reshape(data.shape).astype(np.float32)
+    scale = np.float32(multiplier / max(order.size - 1, 1))
+    return (ranks * scale).astype(np.float32).reshape(data.shape)
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +95,7 @@ class DensityModel:
         self.cell_center = np.zeros(3)
         self.dims = np.zeros(3, dtype=int)
         self._smooth_cache: Dict[Tuple[str, int], np.ndarray] = {}
+        self._voldata_cache: Dict[Tuple, VolumeData] = {}
         self._region_cache: Optional[Tuple[Tuple, Region]] = None
         self._gmin = np.zeros(3)
         self._gmax = np.ones(3)
@@ -142,6 +142,7 @@ class DensityModel:
         self._apply_grid(self.settings.grid_resolution)
 
         self._region_cache = None
+        self._voldata_cache.clear()
         del positions, hist_positions, cells, frames
 
     def rebuild_grid(self, resolution: int) -> None:
@@ -151,6 +152,7 @@ class DensityModel:
         self.settings.grid_resolution = int(resolution)
         self._apply_grid(int(resolution))
         self._region_cache = None
+        self._voldata_cache.clear()
 
     def _process_species(self, positions, hist_positions, cells, idx_map,
                          roi_min, roi_max) -> Dict[str, Dict]:
@@ -186,17 +188,15 @@ class DensityModel:
         self.cell_center = gmin + span / 2.0
         self._smooth_cache.clear()
 
-        edges = [gmin[a] + np.arange(res + 1) * self.spacing[a] for a in range(3)]
-        for a in range(3):
-            edges[a][-1] = gmax[a]
         for atype in self.species:
             pos = self.atom_data[atype]["global_positions"]
             if pos.size == 0:
                 hist = np.zeros((res, res, res), dtype=np.float32)
             else:
                 clipped = np.clip(pos, gmin, gmax - 1e-9)
-                hist, _ = np.histogramdd(clipped, bins=edges)
-                hist = hist.astype(np.float32)
+                idx = ((clipped - gmin) / self.spacing).astype(np.int32)
+                flat_idx = idx[:, 0] * (res**2) + idx[:, 1] * res + idx[:, 2]
+                hist = np.bincount(flat_idx, minlength=res**3).reshape(res, res, res).astype(np.float32)
             self.atom_data[atype]["raw_hist"] = hist
 
     # -- smoothing cache -------------------------------------------------
@@ -245,7 +245,13 @@ class DensityModel:
         The colour/opacity RGBA is *not* computed here -- render does that from
         these arrays so appearance tweaks stay cheap.
         """
+        # _rebuild recomputes every visible species on ANY geometry signal;
+        # cache so mode/shell toggles don't re-slice + re-quantile 27M voxels.
         roi = region.roi_indices
+        key = (atype, sigma, tuple(sorted(roi.items())),
+               region.miller.key(), smooth_before)
+        if key in self._voldata_cache:
+            return self._voldata_cache[key]
         roi_slice = (
             slice(roi["xmin"], roi["xmax"] + 1),
             slice(roi["ymin"], roi["ymax"] + 1),
@@ -264,7 +270,11 @@ class DensityModel:
         quantile = quantile_transform(data, multiplier=255.0)
         origin = self.origin + np.array(
             [roi["xmin"], roi["ymin"], roi["zmin"]]) * self.spacing
-        return VolumeData(data, quantile, region.mask, origin, self.spacing)
+        vol = VolumeData(data, quantile, region.mask, origin, self.spacing)
+        if len(self._voldata_cache) > 8:      # bound memory
+            self._voldata_cache.clear()
+        self._voldata_cache[key] = vol
+        return vol
 
     # -- sampling for the Miller-plane mode ------------------------------
     def sample_on_plane(self, atype: str, sigma: int, points: np.ndarray,
