@@ -19,7 +19,8 @@ from ..config import Settings
 from ..render import Appearance
 from .widgets import ComboBox, labelled_slider, labelled_spinbox
 
-MODES = ["Hidden", "Histogram", "Averaged Positions", "Miller Plane Slice"]
+MODES = ["Hidden", "Histogram", "Isosurface", "Averaged Positions",
+         "Miller Plane Slice"]
 
 
 class AtomPanel(QtWidgets.QFrame):
@@ -100,10 +101,49 @@ class AtomPanel(QtWidgets.QFrame):
         self.sphere = labelled_slider("Sphere Size", sr[0], sr[1],
                                       settings.sphere_size_default, lay, geo)
 
+        # position statistic for Averaged Positions mode
+        prow = QtWidgets.QWidget()
+        ph = QtWidgets.QHBoxLayout(prow)
+        ph.setContentsMargins(0, 0, 0, 0)
+        ph.addWidget(QtWidgets.QLabel("Position:"))
+        self.avg_method = ComboBox()
+        self._avg_methods = [("Mode (most visited)", "mode"),
+                             ("Circular mean", "mean"),
+                             ("Naive mean", "naive")]
+        self.avg_method.addItems([label for label, _ in self._avg_methods])
+        keys = [m for _, m in self._avg_methods]
+        if settings.average_method in keys:
+            self.avg_method.setCurrentIndex(keys.index(settings.average_method))
+        self.avg_method.setToolTip(
+            "Mode: the site the atom occupies most often (two-site hoppers "
+            "show at their dominant site). Circular mean: periodic-aware "
+            "average. Naive mean: raw average of stored coordinates.")
+        self.avg_method.currentIndexChanged.connect(geo)
+        ph.addWidget(self.avg_method, stretch=1)
+        lay.addWidget(prow)
+        self.avg_method_row = prow
+
         gr = settings.gamma_range
         self.gamma = labelled_spinbox("Opacity Gamma", gr[0], gr[1],
                                       settings.gamma_default, lay, app,
                                       double=True, step=0.1)
+
+        # Isosurface-only controls
+        self.iso_shells = labelled_spinbox("Iso Shells", 1, 10,
+                                           settings.iso_shells_default, lay, app)
+        self.iso_shells.widget.setToolTip(
+            "Number of nested contour shells across the density window.")
+        self.iso_tol = labelled_spinbox("Band Tolerance", 0.0, 0.45,
+                                        settings.iso_tolerance_default, lay, app,
+                                        double=True, step=0.05)
+        self.iso_tol.widget.setToolTip(
+            "Fraction of the density window trimmed off each end, so the "
+            "outer/inner shells sit clear of the fuzzy extremes.")
+        self.iso_smooth = labelled_spinbox("Surface Smoothing", 0, 100,
+                                           settings.iso_smooth_default, lay, app)
+        self.iso_smooth.widget.setToolTip(
+            "Taubin mesh-smoothing iterations. Rounds off voxel steps "
+            "without shrinking the shells. 0 = raw marching cubes.")
 
         # Separate from opacity: only affects how colour is spread across the
         # density range. Its own line, on by default.
@@ -123,6 +163,9 @@ class AtomPanel(QtWidgets.QFrame):
     def sigma_value(self) -> int:
         return self.sigma.widget.value()
 
+    def average_method(self) -> str:
+        return self._avg_methods[self.avg_method.currentIndex()][1]
+
     def appearance(self) -> Appearance:
         return Appearance(
             cmap=self.cmap.currentText(),
@@ -133,6 +176,9 @@ class AtomPanel(QtWidgets.QFrame):
             normalize_in_range=self.norm.isChecked(),
             color=self.color_btn.property("color"),
             sphere_size=self.sphere.widget.value(),
+            iso_shells=self.iso_shells.widget.value(),
+            iso_tolerance=self.iso_tol.widget.value(),
+            iso_smooth=self.iso_smooth.widget.value(),
         )
 
     # -- internal --------------------------------------------------------
@@ -160,13 +206,17 @@ class AtomPanel(QtWidgets.QFrame):
 
     def _sync_visibility(self):
         mode = self.current_mode()
-        hist_or_slice = mode in ("Histogram", "Miller Plane Slice")
+        density = mode in ("Histogram", "Isosurface", "Miller Plane Slice")
+        iso = mode == "Isosurface"
         average = mode == "Averaged Positions"
-        self.cmap_row.setVisible(hist_or_slice)
-        self.sigma.container.setVisible(hist_or_slice)
+        self.cmap_row.setVisible(density)
+        self.sigma.container.setVisible(density)
         for c in (self.density_lower, self.density_upper, self.opacity, self.gamma):
-            c.container.setVisible(hist_or_slice)
-        self.norm.setVisible(hist_or_slice)
+            c.container.setVisible(density)
+        self.norm.setVisible(density)
+        for c in (self.iso_shells, self.iso_tol, self.iso_smooth):
+            c.container.setVisible(iso)
         self.sphere.container.setVisible(average)
+        self.avg_method_row.setVisible(average)
         self.color_btn.setVisible(True)
         self._set_open(mode != "Hidden")

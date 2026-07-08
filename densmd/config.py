@@ -31,22 +31,27 @@ class Settings:
 
     # --- Grid / compute -------------------------------------------------
     grid_resolution: int = 300        # histogram bins per axis (N^3 voxels)
-    gaussian_sigma: int = 12          # default smoothing sigma (voxels)
+    gaussian_sigma: int = 2          # default smoothing sigma (voxels)
     quantile_bins: int = 256          # nodes used to build transfer functions
     miller_plane_res_factor: int = 4  # plane mesh res = grid_resolution * factor
     miller_sample_order: int = 3      # spline order for map_coordinates on plane
 
     # --- Averaged positions --------------------------------------------
-    unwrap_averages: bool = True      # minimum-image unwrap before averaging
+    average_method: str = "mode"      # 'mode' (most-visited site), 'mean'
+                                      # (circular mean), 'naive' (raw mean)
     average_subsample: int = 1        # use every Nth frame when averaging
 
     # --- Volume render quality -----------------------------------------
+    volume_mapper: str = "smart"      # 'smart' (GPU, fast; soft oblique edges)
+                                      # or 'fixed_point' (CPU, exact; slow)
     interpolation: str = "nearest"    # 'nearest' (sharp, default) or 'linear' (smooth)
     volume_sample_factor: float = 0.5  # ray step as fraction of voxel spacing
                                        # (smaller = crisper + slower)
     projection: str = "perspective"   # 'perspective' or 'orthographic'
     background_color: str = "#ffffff"  # render-window background
     depth_peeling: bool = True        # per-fragment volume compositing
+    interactive_lod: bool = True      # coarse sampling + no peeling while the
+                                      # camera is being dragged
 
     # --- Timing ---------------------------------------------------------
     update_delay_ms: int = 150        # debounce for geometry recomputes
@@ -67,6 +72,11 @@ class Settings:
     opacity_default: int = 100
     gamma_range: tuple = (0.0, 2.0)
     gamma_default: float = 0.0
+
+    # --- Isosurface mode -------------------------------------------------
+    iso_shells_default: int = 4       # nested contour shells
+    iso_tolerance_default: float = 0.05  # window fraction trimmed off each end
+    iso_smooth_default: int = 20      # Taubin mesh-smoothing iterations
 
     # --- Miller ranges --------------------------------------------------
     miller_index_range: tuple = (-10, 10)

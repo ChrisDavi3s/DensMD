@@ -26,7 +26,7 @@ from scipy.ndimage import gaussian_filter, map_coordinates
 from .config import Settings
 from .io import LoadSpec
 from .miller import MillerParams, voxel_centers, voxel_mask
-from .unwrap import averaged_positions
+from .unwrap import representative_positions
 
 
 # ---------------------------------------------------------------------------
@@ -155,19 +155,24 @@ class DensityModel:
     def _process_species(self, positions, hist_positions, cells, idx_map,
                          roi_min, roi_max) -> Dict[str, Dict]:
         stride = max(int(self.settings.average_subsample), 1)
-        unwrap = self.settings.unwrap_averages
         out: Dict[str, Dict] = {}
         for atype, indices in idx_map.items():
             # Histogram uses (NPT-remapped) positions; averaging uses the raw
-            # trajectory + per-frame cells so unwrapping stays correct.
+            # trajectory + per-frame cells so periodic averaging stays correct.
+            # All three position statistics are precomputed here because the
+            # raw trajectory is discarded after load; storing N x 3 per method
+            # is trivial and lets the UI switch methods instantly.
             allpos = hist_positions[:, indices, :].reshape(-1, 3)
             in_roi = np.all((allpos >= roi_min) & (allpos <= roi_max), axis=1)
-            avg = averaged_positions(positions[:, indices, :], cells,
-                                     stride=stride, unwrap=unwrap)
-            in_roi_avg = np.all((avg >= roi_min) & (avg <= roi_max), axis=1)
+            reps = {}
+            for method in ("mode", "mean", "naive"):
+                rep = representative_positions(positions[:, indices, :], cells,
+                                               stride=stride, method=method)
+                keep = np.all((rep >= roi_min) & (rep <= roi_max), axis=1)
+                reps[method] = rep[keep]
             out[atype] = {
                 "global_positions": allpos[in_roi].astype(np.float32),
-                "individual_averages": avg[in_roi_avg],
+                "individual_averages": reps,
             }
         return out
 

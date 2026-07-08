@@ -171,9 +171,21 @@ class SettingsDialog(QtWidgets.QDialog):
         self.plane_order.setValue(settings.miller_sample_order)
         form.addRow("Miller sample spline order:", self.plane_order)
 
-        self.unwrap = QtWidgets.QCheckBox("Unwrap before averaging")
-        self.unwrap.setChecked(settings.unwrap_averages)
-        form.addRow("Averaged positions:", self.unwrap)
+        self.avg_method = ComboBox()
+        self._methods = [("Most-visited site (mode)", "mode"),
+                         ("Circular mean", "mean"),
+                         ("Naive mean", "naive")]
+        self.avg_method.addItems([label for label, _ in self._methods])
+        current = [m for _, m in self._methods].index(settings.average_method) \
+            if settings.average_method in ("mode", "mean", "naive") else 0
+        self.avg_method.setCurrentIndex(current)
+        self.avg_method.setToolTip(
+            "Mode: the site each atom occupies most often -- a two-site "
+            "hopper shows at its dominant site, never in the gap between. "
+            "Circular mean: periodic-aware average. Naive mean: raw average "
+            "of stored coordinates (boundary hoppers land mid-cell). "
+            "Each atom panel can override this per species.")
+        form.addRow("Position statistic (default):", self.avg_method)
 
         self.subsample = SpinBox()
         self.subsample.setRange(1, 1000)
@@ -192,6 +204,6 @@ class SettingsDialog(QtWidgets.QDialog):
         settings.rotation_fps = self.fps.value()
         settings.miller_plane_res_factor = self.plane_res.value()
         settings.miller_sample_order = self.plane_order.value()
-        settings.unwrap_averages = self.unwrap.isChecked()
+        settings.average_method = self._methods[self.avg_method.currentIndex()][1]
         settings.average_subsample = self.subsample.value()
         settings.save()

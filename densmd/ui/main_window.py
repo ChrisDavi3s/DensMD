@@ -69,6 +69,7 @@ class MainWindow(QtWidgets.QMainWindow):
         root = QtWidgets.QHBoxLayout(central)
 
         self.plotter = QtInteractor()
+        self.plotter.renderer.SetUseDepthPeeling(self.settings.depth_peeling)
         self.plotter.renderer.SetUseDepthPeelingForVolumes(self.settings.depth_peeling)
         self.plotter.renderer.SetAmbient(1.0, 1.0, 1.0)
         self.plotter.camera.parallel_projection = (
@@ -259,6 +260,26 @@ class MainWindow(QtWidgets.QMainWindow):
         h.addStretch()
         box.add(row)
 
+        # volume mapper: GPU (fast) vs CPU (exact silhouettes)
+        mrow = QtWidgets.QWidget()
+        mh = QtWidgets.QHBoxLayout(mrow)
+        mh.setContentsMargins(0, 0, 0, 0)
+        mh.addWidget(QtWidgets.QLabel("Volumes:"))
+        self.map_fast = QtWidgets.QRadioButton("Fast (GPU)")
+        self.map_exact = QtWidgets.QRadioButton("Exact (CPU)")
+        exact = self.settings.volume_mapper == "fixed_point"
+        self.map_fast.setChecked(not exact)
+        self.map_exact.setChecked(exact)
+        self.map_fast.setToolTip("GPU ray casting. Fast, but oblique edges and "
+                                 "corners keep a slightly soft, semi-transparent rim.")
+        self.map_exact.setToolTip("CPU ray casting. Pixel-exact fully opaque "
+                                  "edges; slow on large grids. Good for screenshots.")
+        self.map_exact.toggled.connect(self._set_mapper)
+        mh.addWidget(self.map_fast)
+        mh.addWidget(self.map_exact)
+        mh.addStretch()
+        box.add(mrow)
+
         # sampling quality: smaller step = crisper (and slower)
         srow = QtWidgets.QWidget()
         sh = QtWidgets.QHBoxLayout(srow)
@@ -306,12 +327,22 @@ class MainWindow(QtWidgets.QMainWindow):
         box.add(brow)
 
         # depth peeling
-        self.depth_peel = QtWidgets.QCheckBox("Depth peeling (volumes)")
+        self.depth_peel = QtWidgets.QCheckBox("Depth peeling")
         self.depth_peel.setChecked(self.settings.depth_peeling)
         self.depth_peel.setToolTip("Per-fragment compositing for overlapping "
-                                   "translucent volumes. Off = faster.")
+                                   "translucent volumes and isosurface shells. "
+                                   "Off = faster.")
         self.depth_peel.toggled.connect(self._set_depth_peeling)
         box.add(self.depth_peel)
+
+        # interactive LOD: drop quality only while the camera is moving
+        self.lod_check = QtWidgets.QCheckBox("Fast interaction (coarse while moving)")
+        self.lod_check.setChecked(self.settings.interactive_lod)
+        self.lod_check.setToolTip("While dragging the camera, volumes use coarse "
+                                  "ray sampling and depth peeling is paused; full "
+                                  "quality snaps back on release.")
+        self.lod_check.toggled.connect(self._set_lod)
+        box.add(self.lod_check)
 
         # stereo (a render property, so it lives here)
         strow = QtWidgets.QWidget()
@@ -331,6 +362,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_interpolation(self, sharp: bool) -> None:
         self.settings.interpolation = "nearest" if sharp else "linear"
         self.render.set_interpolation(self.settings.interpolation)
+
+    def _set_mapper(self, exact: bool) -> None:
+        self.settings.volume_mapper = "fixed_point" if exact else "smart"
+        self.render.set_mapper(self.settings.volume_mapper)
 
     def _set_projection(self, ortho: bool) -> None:
         self.settings.projection = "orthographic" if ortho else "perspective"
@@ -353,6 +388,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_depth_peeling(self, on: bool) -> None:
         self.settings.depth_peeling = on
         self.render.set_depth_peeling(on)
+
+    def _set_lod(self, on: bool) -> None:
+        self.settings.interactive_lod = on
 
     def _build_timers(self) -> None:
         self.geo_timer = QtCore.QTimer(self)
@@ -487,6 +525,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 vol = self.model.volume_data(atype, sigma, region, smooth_before)
                 if vol is not None:
                     self.render.show_volume(atype, vol, app)
+            elif mode == "Isosurface":
+                vol = self.model.volume_data(atype, sigma, region, smooth_before)
+                if vol is not None:
+                    self.render.show_isosurface(atype, vol, app)
             elif mode == "Averaged Positions":
                 self._show_averages(atype, region, app)
             elif mode == "Miller Plane Slice":
@@ -522,7 +564,8 @@ class MainWindow(QtWidgets.QMainWindow):
     # Mode builders
     # ------------------------------------------------------------------
     def _show_averages(self, atype, region, app) -> None:
-        pts = self.model.atom_data[atype]["individual_averages"]
+        method = self.panels[atype].average_method()
+        pts = self.model.atom_data[atype]["individual_averages"][method]
         if pts.size == 0:
             return
         lo, hi = region.phys_min, region.phys_max

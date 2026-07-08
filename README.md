@@ -10,14 +10,25 @@ DensMD provides a powerful, quick, interactive GUI for loading molecular dynamic
 ## Features
 
 - **Multiple Visualisation Modes**
-  - Density histograms with customisable colour maps
-  - Averaged atomic positions with adjustable sphere sizes [A TAD buggy]
+  - Voxel density histograms with customisable colour maps, rendered on the
+    GPU (fast) or CPU (pixel-exact edges) — switchable in the Render panel
+  - Nested isosurface shells extracted from the same density field — fast,
+    razor-sharp, with per-shell opacity ramping (shell count, band tolerance
+    and surface smoothing are adjustable per atom)
+  - Averaged atomic positions with adjustable sphere sizes — by default each
+    atom is drawn at its *most-visited site* (periodic-aware mode), so
+    two-site hoppers never smear into the gap between sites
   - Per-atom type visualisation settings
 
 - **Miller Plane Slicing**
   - Define custom Miller indices (hkl)
   - Adjustable slice thickness and offset
   - Automatic camera alignment to plane
+
+- **Responsive Rendering**
+  - Appearance changes (colour, opacity, gamma) never recompute the density
+  - Interactive LOD: coarse sampling while the camera moves, full quality on
+    release (toggleable in the Render panel)
 
 ## Screenshots
 
@@ -68,12 +79,16 @@ To open a file directly from the command line:
 python run_densmd.py /path/to/traj.dat --slice ::5 --map H:Li,He:P
 ```
 
-Averaged-atom positions are **unwrapped** with the minimum-image convention
-before averaging, so highly mobile ions are represented correctly. For **NPT**
-trajectories each frame is remapped into the mean cell via fractional
-coordinates, so both the density histograms and the averaged positions stay
-consistent as the cell fluctuates. You can toggle unwrapping and set a frame
-subsample stride in **File > Settings**.
+Averaged-atom positions default to the **most-visited site (mode)**: each
+atom's trajectory is kernel-density scored with minimum-image distances, and
+the atom is drawn at the centre of its dominant cluster. A vibrating atom
+shows at its site, a 70/30 two-site hopper shows at the 70 % site, and a
+boundary hopper shows at the boundary — no statistic ever lands in a gap the
+atom never occupies. A periodic-aware **circular mean** and the **naive
+mean** are also available in **File > Settings**, along with a frame
+subsample stride. For **NPT** trajectories each frame is remapped into the
+mean cell via fractional coordinates, so both the density histograms and the
+atom positions stay consistent as the cell fluctuates.
 
 Other compute defaults (smoothing, update delay, plane resolution) also live in
 **File > Settings** and persist to `~/.densmd.json`.
@@ -85,16 +100,18 @@ densmd/
   config.py     runtime settings + JSON persistence
   io.py         trajectory loading, slice parsing, type remap
   miller.py     Miller-plane geometry (normals, masks, filtering)
+  unwrap.py     representative positions (PBC-aware mode / circular mean)
   model.py      compute core: histograms, smoothing/region caches, scalar fields
-  render.py     PyVista/VTK layer: transfer functions, LUTs, stereo, camera
+  render.py     PyVista/VTK layer: volumes, isosurfaces, LUTs, stereo, camera
   ui/           Qt widgets, panels, dialogs, main window
   app.py        application boot
 ```
 
 Updates are split into two tiers. *Geometry* changes (ROI, Miller, smoothing)
 recompute a scalar field, debounced. *Appearance* changes (colour, opacity,
-gamma, colormap) only rebuild VTK transfer-function nodes on the existing actor,
-so slider drags are effectively free — no volume rebuild and no camera jump.
+gamma, colormap) only re-run a cheap RGBA/LUT remap over cached arrays on the
+existing actor, so slider drags are effectively free — no density recompute
+and no camera jump.
 
 ## Dependencies
 
@@ -110,13 +127,17 @@ so slider drags are effectively free — no volume rebuild and no camera jump.
 Done recently:
 - Multi-module package (config / io / miller / model / render / ui)
 - In-app file loading and settings (no source editing)
-- Two-tier update pipeline (transfer functions) for fast appearance changes
+- Two-tier update pipeline for fast appearance changes
 - Stereo 3D render toggle
+- Isosurface shell mode (nested contours, fast + sharp)
+- GPU/CPU volume mapper toggle and interactive LOD
+- Averaged ion positions done properly: most-visited site (periodic-aware
+  mode) by default, with circular-mean and naive-mean options — no more
+  hoppers averaging into gaps they never occupy
 
 Still planned:
 - Export functionality for images and videos
 - Measurement tools for atomic distances and angles
-- The averaged ion positions is ~kinda~ a hack right now and needs me to sit down and have a think about how to do this property.
 
 ## License
 

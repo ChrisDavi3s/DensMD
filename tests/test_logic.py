@@ -122,7 +122,9 @@ class TestModel(unittest.TestCase):
         hist = np.random.rand(10, 10, 10).astype(np.float32)
         m.atom_data = {"A": {"raw_hist": hist,
                              "global_positions": np.zeros((1, 3)),
-                             "individual_averages": np.zeros((0, 3))}}
+                             "individual_averages": {
+                                 m_: np.zeros((0, 3))
+                                 for m_ in ("mode", "mean", "naive")}}}
         self.roi = dict(xmin=2, xmax=6, ymin=2, ymax=6, zmin=2, zmax=6)
 
     def test_quantile_transform_bounds(self):
@@ -183,19 +185,66 @@ class TestUnwrap(unittest.TestCase):
         self.traj = np.array([[[9.0, 5, 5]], [[1.0, 5, 5]],
                               [[9.0, 5, 5]], [[1.0, 5, 5]]])
 
-    def test_boundary_hopping(self):
-        avg = unwrap.averaged_positions(self.traj, self.cells, stride=1, unwrap=True)
+    @staticmethod
+    def _traj(xs):
+        return np.array([[[x, 5.0, 5.0]] for x in xs])
+
+    def test_boundary_hopping_mean(self):
+        avg = unwrap.representative_positions(self.traj, self.cells,
+                                              method="mean")
         naive = self.traj[:, 0, 0].mean()
         self.assertAlmostEqual(naive, 5.0)  # naive mean is midpoint (wrong)
         self.assertLess(min(avg[0, 0], 10 - avg[0, 0]), 1.0)  # near boundary
 
+    def test_drift_returns_to_edge(self):
+        # Ion lives at the x edge but makes one round trip across the box.
+        x = [9.9] * 8 + [2.0, 4.0, 6.0, 8.0] + [9.9] * 2
+        traj = self._traj(x)
+        cells = np.stack([np.eye(3) * 10.0] * len(x))
+        for method in ("mean", "mode"):
+            avg = unwrap.representative_positions(traj, cells, method=method)
+            self.assertLess(min(avg[0, 0], 10 - avg[0, 0]), 1.0, method)
+
+    def test_mode_two_interior_sites(self):
+        # 70/30 hopper between x=3 and x=7: every mean lands in the gap,
+        # the mode must sit on the dominant site.
+        traj = self._traj([3.0] * 14 + [7.0] * 6)
+        cells = np.stack([np.eye(3) * 10.0] * 20)
+        avg = unwrap.representative_positions(traj, cells, method="mode")
+        self.assertAlmostEqual(avg[0, 0], 3.0, places=5)
+
+    def test_mode_boundary_flicker(self):
+        # Atom flickering between distinct sites at opposite faces must land
+        # on its dominant site, never mid-cell.
+        traj = self._traj([9.5] * 12 + [2.5] * 8)
+        cells = np.stack([np.eye(3) * 10.0] * 20)
+        avg = unwrap.representative_positions(traj, cells, method="mode")
+        self.assertAlmostEqual(avg[0, 0], 9.5, places=5)
+
+    def test_mode_merges_site_straddling_boundary(self):
+        # 9.5 and 0.5 are one physical site 1 A wide through the boundary;
+        # the mode should give its centre near the edge, not mid-cell.
+        traj = self._traj([9.5] * 12 + [0.5] * 8)
+        cells = np.stack([np.eye(3) * 10.0] * 20)
+        x = unwrap.representative_positions(traj, cells, method="mode")[0, 0]
+        self.assertLess(min(x, 10 - x), 1.0)
+
+    def test_interior_atom_all_methods(self):
+        traj = self._traj([4.9, 5.1, 5.0])
+        cells = np.stack([np.eye(3) * 10.0] * 3)
+        for method in ("naive", "mean", "mode"):
+            avg = unwrap.representative_positions(traj, cells, method=method)
+            self.assertAlmostEqual(avg[0, 0], 5.0, places=6, msg=method)
+
     def test_npt_expanding_cell_finite(self):
         cells_npt = np.stack([np.eye(3) * (10 + i) for i in range(4)])
-        avg = unwrap.averaged_positions(self.traj, cells_npt, stride=1, unwrap=True)
-        self.assertTrue(np.all(np.isfinite(avg)))
+        for method in ("mean", "mode"):
+            avg = unwrap.representative_positions(self.traj, cells_npt,
+                                                  method=method)
+            self.assertTrue(np.all(np.isfinite(avg)), method)
 
     def test_subsample_stride(self):
-        avg = unwrap.averaged_positions(self.traj, self.cells, stride=2)
+        avg = unwrap.representative_positions(self.traj, self.cells, stride=2)
         self.assertTrue(np.all(np.isfinite(avg)))
 
 
@@ -224,6 +273,34 @@ class TestRenderHelpers(unittest.TestCase):
                                   render.Appearance())
         self.assertEqual(ci.min(), 0)
         self.assertEqual(ci.max(), 1)
+
+
+class TestIsoHelpers(unittest.TestCase):
+    def test_iso_levels_span_and_tolerance(self):
+        lv = render.iso_levels(100, 200, 3, 0.1)   # pad = 10
+        self.assertTrue(np.allclose(lv, [110, 150, 190]))
+        self.assertTrue(np.all(np.diff(lv) > 0))
+
+    def test_iso_levels_degenerate_window(self):
+        lv = render.iso_levels(128, 128, 5, 0.0)   # collapsed window -> 1 shell
+        self.assertEqual(lv.size, 1)
+        lv2 = render.iso_levels(200, 100, 2, 0.0)  # swapped bounds tolerated
+        self.assertTrue(np.allclose(lv2, [100, 200]))
+
+    def test_iso_shell_style_gamma_and_opacity(self):
+        vol = model.VolumeData(
+            np.random.rand(4, 4, 4).astype(np.float32),
+            np.zeros((4, 4, 4), dtype=np.float32), None,
+            np.zeros(3), np.ones(3))
+        lv = render.iso_levels(0, 255, 4, 0.0)
+        # gamma 0 -> every shell fully opaque before the opacity scale
+        _, a0 = render.iso_shell_style(vol, lv, render.Appearance(
+            density_lower=0, density_upper=255, opacity=50, gamma=0.0))
+        self.assertTrue(np.allclose(a0, 0.5))
+        # gamma 1 -> outer shells fainter than inner
+        _, a1 = render.iso_shell_style(vol, lv, render.Appearance(
+            density_lower=0, density_upper=255, opacity=100, gamma=1.0))
+        self.assertTrue(np.all(np.diff(a1) > 0))
 
 
 if __name__ == "__main__":
