@@ -31,7 +31,7 @@ class Settings:
 
     # --- Grid / compute -------------------------------------------------
     grid_resolution: int = 300        # histogram bins per axis (N^3 voxels)
-    gaussian_sigma: int = 2          # default smoothing sigma (voxels)
+    gaussian_sigma: float = 1.0      # default smoothing sigma (voxels)
     quantile_bins: int = 256          # nodes used to build transfer functions
     miller_plane_res_factor: int = 4  # plane mesh res = grid_resolution * factor
     miller_sample_order: int = 3      # spline order for map_coordinates on plane

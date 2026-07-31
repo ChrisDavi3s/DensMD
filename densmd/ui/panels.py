@@ -88,7 +88,8 @@ class AtomPanel(QtWidgets.QFrame):
         self.cmap_row = crow
 
         self.sigma = labelled_slider("Smoothing σ", 0, 20,
-                                     settings.gaussian_sigma, lay, geo)
+                                     settings.gaussian_sigma, lay, geo,
+                                     step=0.1, decimals=1)
 
         dr = settings.density_range
         self.density_lower = labelled_slider("Density Lower", dr[0], dr[1],
@@ -160,8 +161,8 @@ class AtomPanel(QtWidgets.QFrame):
     def current_mode(self) -> str:
         return self.mode.currentText()
 
-    def sigma_value(self) -> int:
-        return self.sigma.widget.value()
+    def sigma_value(self) -> float:
+        return self.sigma.scaled_value()
 
     def average_method(self) -> str:
         return self._avg_methods[self.avg_method.currentIndex()][1]

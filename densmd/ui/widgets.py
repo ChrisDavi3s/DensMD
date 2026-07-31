@@ -60,18 +60,33 @@ class Control:
         w = self.widget
         return w.value() if hasattr(w, "value") else None
 
+    def scaled_value(self) -> float:
+        """Raw value multiplied by the widget's step scale (see labelled_slider)."""
+        return self.value() * getattr(self.widget, "scale", 1.0)
 
-def labelled_slider(text: str, lo: int, hi: int, init: int,
+
+def labelled_slider(text: str, lo: float, hi: float, init: float,
                     layout: QtWidgets.QLayout,
-                    on_change: Optional[Callable] = None) -> Control:
+                    on_change: Optional[Callable] = None,
+                    step: float = 1.0, decimals: int = 0) -> Control:
+    """Slider over [lo, hi] in increments of ``step``.
+
+    The underlying QSlider is integer-valued; ``step`` scales it so fractional
+    increments work. Use ``Control.scaled_value()`` to read the real value.
+    """
     box = QtWidgets.QWidget()
     v = QtWidgets.QVBoxLayout(box)
     v.setContentsMargins(0, 2, 0, 2)
-    label = QtWidgets.QLabel(f"{text}: {init}")
+
+    def fmt(val: float) -> str:
+        return f"{text}: {val:.{decimals}f}"
+
+    label = QtWidgets.QLabel(fmt(init))
     slider = Slider(QtCore.Qt.Horizontal)
-    slider.setRange(lo, hi)
-    slider.setValue(init)
-    slider.valueChanged.connect(lambda val: label.setText(f"{text}: {val}"))
+    slider.setRange(round(lo / step), round(hi / step))
+    slider.setValue(round(init / step))
+    slider.scale = step
+    slider.valueChanged.connect(lambda val: label.setText(fmt(val * step)))
     if on_change:
         slider.valueChanged.connect(on_change)
     v.addWidget(label)

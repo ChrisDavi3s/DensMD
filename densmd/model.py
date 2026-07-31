@@ -206,7 +206,7 @@ class DensityModel:
             self.atom_data[atype]["raw_hist"] = hist
 
     # -- smoothing cache -------------------------------------------------
-    def smoothed(self, atype: str, sigma: int) -> np.ndarray:
+    def smoothed(self, atype: str, sigma: float) -> np.ndarray:
         """Gaussian-smoothed full histogram, cached by (atype, sigma)."""
         raw = self.atom_data[atype]["raw_hist"]
         if sigma <= 0:
@@ -249,7 +249,7 @@ class DensityModel:
         return region
 
     # -- volume data for the histogram mode ------------------------------
-    def volume_data(self, atype: str, sigma: int, region: Region,
+    def volume_data(self, atype: str, sigma: float, region: Region,
                     smooth_before: bool) -> Optional[VolumeData]:
         """ROI density + quantile transform for the histogram mode.
 
@@ -288,7 +288,7 @@ class DensityModel:
         return vol
 
     # -- sampling for the Miller-plane mode ------------------------------
-    def sample_on_plane(self, atype: str, sigma: int, points: np.ndarray,
+    def sample_on_plane(self, atype: str, sigma: float, points: np.ndarray,
                         smooth_before: bool) -> np.ndarray:
         """Interpolate the (optionally smoothed) histogram onto plane points."""
         if smooth_before and sigma > 0:
